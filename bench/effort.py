@@ -875,13 +875,30 @@ def detect_effective_effort(envelope: dict) -> str | None:
     return None
 
 
-def invoke_claude(prompt: str, tier: str, model: str, timeout_s: int, env: dict,
-                  settings_path: str | None = None) -> _SandboxResult:
+def build_claude_cmd(prompt: str, tier: str, model: str, settings_path: str | None = None,
+                     stripped: bool = False,
+                     append_system_prompt_file: str | None = None) -> list[str]:
+    """argv for one headless `claude` call. Stripped mode loads no user/project/local
+    settings (`--setting-sources ""`, an empty argv element) and no MCP servers
+    (`--strict-mcp-config`), so CLAUDE.md, plugins, hooks and skills from the host
+    install cannot leak into the measured run; `--settings` (the effort-capture hook)
+    is still honored. `append_system_prompt_file` supplies the worker's context."""
     cmd = ["claude", "-p", "--effort", tier, "--model", model,
            "--output-format", "json"]
+    if stripped:
+        cmd += ["--setting-sources", "", "--strict-mcp-config"]
     if settings_path:
         cmd += ["--settings", settings_path]
-    cmd += [prompt]
+    if append_system_prompt_file:
+        cmd += ["--append-system-prompt-file", append_system_prompt_file]
+    return cmd + [prompt]
+
+
+def invoke_claude(prompt: str, tier: str, model: str, timeout_s: int, env: dict,
+                  settings_path: str | None = None, stripped: bool = False,
+                  append_system_prompt_file: str | None = None) -> _SandboxResult:
+    cmd = build_claude_cmd(prompt, tier, model, settings_path, stripped,
+                           append_system_prompt_file)
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
         return _SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)

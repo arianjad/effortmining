@@ -81,5 +81,50 @@ class TierScopedPipelineTest(unittest.TestCase):
             self.assertIsNone(c["overthinking"], cls)
 
 
+class BuildClaudeCmdTest(unittest.TestCase):
+    def test_default_argv_is_the_legacy_command(self):
+        # Literal legacy argv from invoke_claude at 9561671.
+        self.assertEqual(
+            e.build_claude_cmd("PROMPT", "high", "m", settings_path="s.json"),
+            ["claude", "-p", "--effort", "high", "--model", "m",
+             "--output-format", "json", "--settings", "s.json", "PROMPT"])
+        self.assertEqual(
+            e.build_claude_cmd("PROMPT", "low", "m"),
+            ["claude", "-p", "--effort", "low", "--model", "m",
+             "--output-format", "json", "PROMPT"])
+
+    def test_stripped_argv(self):
+        cmd = e.build_claude_cmd("PROMPT", "xhigh", "m", settings_path="cap.json",
+                                 stripped=True, append_system_prompt_file="ctx.md")
+        self.assertEqual(
+            cmd,
+            ["claude", "-p", "--effort", "xhigh", "--model", "m",
+             "--output-format", "json", "--setting-sources", "", "--strict-mcp-config",
+             "--settings", "cap.json", "--append-system-prompt-file", "ctx.md", "PROMPT"])
+        # The empty setting-sources value must be its own argv element.
+        i = cmd.index("--setting-sources")
+        self.assertEqual(cmd[i + 1], "")
+
+    def test_invoke_claude_passes_mode_to_subprocess(self):
+        seen = []
+
+        class _P:
+            returncode, stdout, stderr = 0, "{}", ""
+
+        def fake_run(cmd, **kw):
+            seen.append(cmd)
+            return _P()
+
+        orig = e.subprocess.run
+        e.subprocess.run = fake_run
+        try:
+            e.invoke_claude("P", "low", "m", 5, {}, "cap.json", stripped=True,
+                            append_system_prompt_file="ctx.md")
+        finally:
+            e.subprocess.run = orig
+        self.assertEqual(seen, [e.build_claude_cmd("P", "low", "m", "cap.json", True,
+                                                   "ctx.md")])
+
+
 if __name__ == "__main__":
     unittest.main()
