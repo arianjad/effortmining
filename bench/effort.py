@@ -672,9 +672,11 @@ def run_sandboxed(program: str, timeout_s: int) -> _SandboxResult:
         env = {"PATH": "/usr/bin:/bin", "HOME": workdir, "LC_ALL": "C", "TMPDIR": workdir}
         posix = os.name == "posix"
         proc = subprocess.Popen(
-            [sys.executable, "-I", "-S", src],
+            # -X utf8: stdio is UTF-8 regardless of the host code page (-I ignores
+            # PYTHONIOENCODING). errors="replace": model output must never crash grading.
+            [sys.executable, "-X", "utf8", "-I", "-S", src],
             cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True,
+            encoding="utf-8", errors="replace",
             # POSIX: own session so a timeout can killpg the whole tree, plus rlimits.
             # Windows has neither; there the tree is held by a kill-on-close Job
             # Object and the sandbox is -I -S + fresh CWD + minimal env + timeout.

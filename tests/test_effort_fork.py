@@ -238,6 +238,11 @@ class SandboxTreeKillTest(unittest.TestCase):
         time.sleep(7)  # past the grandchild's 6 s sleep
         self.assertFalse(os.path.exists(marker), "grandchild outlived the timeout")
 
+    def test_non_ascii_stdout_round_trips(self):
+        res = e.run_sandboxed("print('\\u03bb')\n", 5)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertEqual(res.stdout, "\u03bb\n")
+
 
 if __name__ == "__main__":
     unittest.main()
