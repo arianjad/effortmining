@@ -225,9 +225,65 @@ def gen_t4_constrained_counting(seed: int, difficulty: int = 1) -> dict:
                  "suffix-state recurrence that tracks runs and partial matches of the word.")
 
 
+# --------------------------------------------------------------------------- #
+# RH: multi-hop variable tracing across provided documents                     #
+# Class R-research, exact-checked like the shipped R1/R4-R6: grading dispatches  #
+# on checker type, so the label does not route it to the blind grader.          #
+# --------------------------------------------------------------------------- #
+_WORDS = ["ALPHA", "BRAVO", "CEDAR", "DELTA", "EMBER", "FJORD", "GAMMA", "HELIX",
+          "IONIC", "JUNO", "KAPPA", "LUMEN", "MAPLE", "NOVA", "ORBIT", "PRISM"]
+
+
+def gen_rh_multihop(seed: int, difficulty: int = 1) -> dict:
+    rng = random.Random(f"RH|{seed}|{difficulty}")
+    d = difficulty
+    hops = 2 + d
+    names = rng.sample(_WORDS, hops + 1)
+    value = rng.randint(20, 60)
+    values = {names[0]: value}
+    defs = {names[0]: str(value)}
+    for prev, name in zip(names, names[1:]):
+        op = rng.choice("+-*" if value <= 200 else "+-")
+        c = rng.randint(2, 3) if op == "*" else rng.randint(2, 9)
+        value = value + c if op == "+" else value - c if op == "-" else value * c
+        values[name], defs[name] = value, f"{prev} {op} {c}"
+    docs = [f"Document status: AUTHORITATIVE\nDefinitions:\n  {n} = {defs[n]}\n"
+            f"  {n}_MIN = {rng.randint(1, 9)}" for n in names]
+    # Superseded drafts pin a chain name to a stale literal != its true value; every
+    # op downstream is injective, so following any draft changes the final answer.
+    for _ in range(d):
+        n = rng.choice(names)
+        stale = values[n] + rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
+        docs.append(f"Document status: SUPERSEDED DRAFT (do not use)\nDefinitions:\n"
+                    f"  {n} = {stale}")
+    rng.shuffle(docs)
+    documents = [{"title": f"config note {i}", "content": c} for i, c in enumerate(docs, 1)]
+    target = names[-1]
+    prompt = [
+        f"You have been given {len(documents)} configuration notes (prepended above). Each",
+        "note begins with a status line. Notes marked AUTHORITATIVE are current; notes",
+        "marked SUPERSEDED are stale drafts and must be ignored. Each definition has the",
+        "form NAME = expression, where an expression is an integer, or another NAME",
+        "combined with an integer by +, - or *.",
+        "",
+        f"Using only the AUTHORITATIVE definitions, compute the value of {target}.",
+        "",
+        "Output exactly one line of the form:",
+        "VALUE: <integer>",
+        "",
+        ANSWER_TAIL.format(what="line"),
+    ]
+    return _task("RH", "R-research", seed, d, "Trace a variable through multi-hop definitions",
+                 prompt, [f"VALUE: {values[target]}"], 800 + 200 * d,
+                 f"{hops} hops across separate notes with {d} superseded draft(s) that "
+                 "redefine chain variables; following any draft changes the answer.",
+                 documents=documents)
+
+
 GENERATORS = {
     "T1": gen_t1_counting,
     "T2": gen_t2_base_conversion,
     "T3": gen_t3_program_tracing,
     "T4": gen_t4_constrained_counting,
+    "RH": gen_rh_multihop,
 }

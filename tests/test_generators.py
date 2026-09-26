@@ -174,5 +174,62 @@ class T4ConstrainedCountingTest(unittest.TestCase):
             self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
 
 
+class MultiHopTracingTest(unittest.TestCase):
+    """Multi-hop variable tracing across provided documents (exact-checked R-research)."""
+
+    def _resolve(self, task):
+        defs = {}
+        for doc in task["documents"]:
+            if "status: AUTHORITATIVE" not in doc["content"]:
+                continue
+            for name, expr in re.findall(r"^\s*([A-Z_]+) = (.+)$", doc["content"], re.M):
+                self.assertNotIn(name, defs, "authoritative docs define a name twice")
+                defs[name] = expr
+
+        def depth(name):
+            deps = [x for x in re.findall(r"[A-Z_]+", defs[name])]
+            return 1 + max(depth(x) for x in deps) if deps else 0
+
+        values = {}
+        while len(values) < len(defs):  # multi-pass: order-independent evaluation
+            for name, expr in defs.items():
+                if name not in values:
+                    try:
+                        values[name] = eval(expr, {"__builtins__": {}}, dict(values))
+                    except NameError:
+                        pass
+        target = re.search(r"compute the value of ([A-Z_]+)", _prompt(task)).group(1)
+        return values[target], depth(target)
+
+    def test_expected_matches_evaluator(self):
+        for s in SEEDS:
+            for d in LEVELS:
+                t = g.GENERATORS["RH"](s, d)
+                self.assertEqual(t["class"], "R-research")
+                value, _ = self._resolve(t)
+                self.assertEqual(_answer(t), [f"VALUE: {value}"], (s, d))
+
+    def test_difficulty_adds_hops(self):
+        for s in SEEDS:
+            hops = [self._resolve(g.GENERATORS["RH"](s, d))[1] for d in LEVELS]
+            self.assertEqual(hops, sorted(set(hops)), (s, hops))
+
+    def test_superseded_documents_change_the_answer_if_followed(self):
+        # The distractors are live: evaluating with superseded definitions winning
+        # gives a different value, so ignoring the status line is penalized.
+        def defs(t, status):
+            return {n: x for doc in t["documents"] if f"status: {status}" in doc["content"]
+                    for n, x in re.findall(r"^\s*([A-Z_]+) = (.+)$", doc["content"], re.M)}
+        for s in SEEDS:
+            for d in LEVELS:
+                t = g.GENERATORS["RH"](s, d)
+                sup = defs(t, "SUPERSEDED")
+                self.assertTrue(sup, "no superseded definitions")
+                merged = {**defs(t, "AUTHORITATIVE"), **sup}  # superseded wins
+                fooled = dict(t, documents=[{"title": "m", "content": "status: AUTHORITATIVE\n"
+                              + "\n".join(f"  {n} = {x}" for n, x in merged.items())}])
+                self.assertNotEqual(self._resolve(fooled)[0], self._resolve(t)[0], (s, d))
+
+
 if __name__ == "__main__":
     unittest.main()
