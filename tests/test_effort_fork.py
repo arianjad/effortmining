@@ -47,6 +47,13 @@ class TierScopedPipelineTest(unittest.TestCase):
         self.assertIn("max", e.TIERS)
         self.assertIn("max", {c["tier"] for c in e.build_cells(tasks, "pilot")})
 
+    def test_build_cells_probe_low_is_low_only_single_rep(self):
+        # Difficulty pilot: find the generator difficulty where low passes ~50%.
+        tasks = e.load_tasks(TASKS_DIR)
+        cells = e.build_cells(tasks, "probe-low")
+        self.assertEqual({c["tier"] for c in cells}, {"low"})
+        self.assertEqual(len(cells), len(tasks))
+
     def test_mock_pipeline_on_four_tier_scale(self):
         ns = _ns(self.tmp, scale="pilot4")
         self.assertEqual(e.cmd_validate(ns), 0)

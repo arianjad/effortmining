@@ -101,6 +101,7 @@ MOCK_BASE_OUT = {"low": 120, "medium": 400, "high": 1000, "xhigh": 2200, "max": 
 SCALES = {
     "pilot":    {"reps": 3, "classes": None},
     "pilot4":   {"reps": 3, "classes": None, "tiers": ["low", "medium", "high", "xhigh"]},
+    "probe-low": {"reps": 1, "classes": None, "tiers": ["low"]},  # difficulty pilot
     "fallback": {"reps": 2, "classes": None},
     "reduced":  {"reps": 3, "classes": {"T1-mechanical", "T2-simple-transform"}},
     "extended": {"reps": 5, "classes": None},
