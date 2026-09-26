@@ -598,7 +598,11 @@ def run_sandboxed(program: str, timeout_s: int) -> _SandboxResult:
             proc = subprocess.run(
                 [sys.executable, "-I", "-S", src],
                 cwd=workdir, env=env, capture_output=True, text=True,
-                timeout=timeout_s, preexec_fn=_sandbox_preexec(timeout_s))
+                timeout=timeout_s,
+                # preexec_fn (and the POSIX rlimits it applies) does not exist on
+                # Windows; there the sandbox degrades to -I -S + fresh CWD +
+                # minimal env + wall-clock timeout.
+                preexec_fn=_sandbox_preexec(timeout_s) if os.name == "posix" else None)
             return _SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)
         except subprocess.TimeoutExpired as e:
             return _SandboxResult(-1, e.stdout or "", e.stderr or "", True)

@@ -27,6 +27,11 @@ FIXTURES = os.path.join(HERE, "fixtures-v2")
 V1_TASKS = os.path.join(BENCH, "tasks")
 
 
+def _posix(path):
+    """Separator-neutral form for endswith() checks (os.path.join uses \\ on Windows)."""
+    return path.replace(os.sep, "/")
+
+
 def _ns(root, **over):
     base = dict(root=root, tasks_dir=FIXTURES, seed=e.SEED_DEFAULT, model=e.MODEL,
                mock=True, scale="pilot", parallel=1, rerun_failed=False, regrade=False,
@@ -42,23 +47,23 @@ def _ns(root, **over):
 class SuitePathIsolationTest(unittest.TestCase):
     def test_v1_paths_are_the_v1_names(self):
         p = e.Paths("/tmp/x", None, "v1")
-        self.assertTrue(p.results.endswith("raw/results.jsonl"))
-        self.assertTrue(p.graded.endswith("state/graded.jsonl"))
-        self.assertTrue(p.analysis.endswith("state/analysis.json"))
-        self.assertTrue(p.phase0.endswith("state/phase0.json"))
-        self.assertTrue(p.results_md.endswith("RESULTS.md"))
-        self.assertTrue(p.tasks.endswith("/tasks"))
+        self.assertTrue(_posix(p.results).endswith("raw/results.jsonl"))
+        self.assertTrue(_posix(p.graded).endswith("state/graded.jsonl"))
+        self.assertTrue(_posix(p.analysis).endswith("state/analysis.json"))
+        self.assertTrue(_posix(p.phase0).endswith("state/phase0.json"))
+        self.assertTrue(_posix(p.results_md).endswith("RESULTS.md"))
+        self.assertTrue(_posix(p.tasks).endswith("/tasks"))
 
     def test_v2_paths_are_suffixed_and_share_calibration(self):
         v1 = e.Paths("/tmp/x", None, "v1")
         v2 = e.Paths("/tmp/x", None, "v2")
-        self.assertTrue(v2.results.endswith("raw/results-v2.jsonl"))
-        self.assertTrue(v2.graded.endswith("state/graded-v2.jsonl"))
-        self.assertTrue(v2.analysis.endswith("state/analysis-v2.json"))
-        self.assertTrue(v2.phase0.endswith("state/phase0-v2.json"))
-        self.assertTrue(v2.results_md.endswith("RESULTS-v2.md"))
-        self.assertTrue(v2.tasks.endswith("/tasks-v2"))
-        self.assertTrue(v2.results_composite.endswith("raw/results-composite.jsonl"))
+        self.assertTrue(_posix(v2.results).endswith("raw/results-v2.jsonl"))
+        self.assertTrue(_posix(v2.graded).endswith("state/graded-v2.jsonl"))
+        self.assertTrue(_posix(v2.analysis).endswith("state/analysis-v2.json"))
+        self.assertTrue(_posix(v2.phase0).endswith("state/phase0-v2.json"))
+        self.assertTrue(_posix(v2.results_md).endswith("RESULTS-v2.md"))
+        self.assertTrue(_posix(v2.tasks).endswith("/tasks-v2"))
+        self.assertTrue(_posix(v2.results_composite).endswith("raw/results-composite.jsonl"))
         # calibration.json is deliberately SHARED across suites.
         self.assertEqual(v1.calibration, v2.calibration)
 
