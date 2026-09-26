@@ -117,7 +117,67 @@ def gen_t2_base_conversion(seed: int, difficulty: int = 1) -> dict:
                  "bases; digit count grows with difficulty.")
 
 
+# --------------------------------------------------------------------------- #
+# T3: program tracing (the T3c stack machine, extended with swap and multiply) #
+# --------------------------------------------------------------------------- #
+_T3_PROGRAM = [
+    "def process(seq):",
+    "    stack = []",
+    "    for x in seq:",
+    "        if x == 'D' and stack:",
+    "            stack.pop()",
+    "        elif x == 'X' and stack:",
+    "            stack[-1] += 1",
+    "        elif x == 'S' and len(stack) >= 2:",
+    "            stack[-1], stack[-2] = stack[-2], stack[-1]",
+    "        elif x == 'M' and len(stack) >= 2:",
+    "            stack.append(stack.pop() * stack.pop())",
+    "        else:",
+    "            stack.append(1)",
+    "    return sum((i + 1) * v for i, v in enumerate(stack))",
+]
+
+
+def _t3_run(seq: str) -> int:
+    stack = []
+    for x in seq:
+        if x == "D" and stack:
+            stack.pop()
+        elif x == "X" and stack:
+            stack[-1] += 1
+        elif x == "S" and len(stack) >= 2:
+            stack[-1], stack[-2] = stack[-2], stack[-1]
+        elif x == "M" and len(stack) >= 2:
+            stack.append(stack.pop() * stack.pop())
+        else:
+            stack.append(1)
+    return sum((i + 1) * v for i, v in enumerate(stack))
+
+
+def gen_t3_program_tracing(seed: int, difficulty: int = 1) -> dict:
+    rng = random.Random(f"T3|{seed}|{difficulty}")
+    d = difficulty
+    seq = "".join(rng.choice("AABDXXSM") for _ in range(4 + 4 * d))
+    prompt = [
+        "The Python program below processes a string of opcodes with a list used as a",
+        "stack. Determine exactly what it prints.",
+        "",
+        *["    " + ln for ln in _T3_PROGRAM],
+        "",
+        f"    print(process('{seq}'))",
+        "",
+        "Trace the execution by hand and give the printed value.",
+        "",
+        ANSWER_TAIL.format(what="printed value"),
+    ]
+    return _task("T3", "T3-moderate-reasoning", seed, d, "Trace an extended stack-machine program",
+                 prompt, [str(_t3_run(seq))], 600 + 150 * d,
+                 f"State tracking over {len(seq)} opcodes with guarded pop/increment/swap/"
+                 "multiply branches and a position-weighted sum; one slip changes the integer.")
+
+
 GENERATORS = {
     "T1": gen_t1_counting,
     "T2": gen_t2_base_conversion,
+    "T3": gen_t3_program_tracing,
 }

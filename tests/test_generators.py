@@ -8,6 +8,7 @@ multi-pass evaluator over the authoritative definitions (multi-hop).
 """
 import os
 import re
+import subprocess
 import sys
 import unittest
 
@@ -114,6 +115,31 @@ class T2BaseConversionTest(unittest.TestCase):
         for s in SEEDS:
             sizes = [sum(len(x) for x, _ in self._numerals(g.GENERATORS["T2"](s, d)))
                      for d in LEVELS]
+            self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
+
+
+class T3ProgramTracingTest(unittest.TestCase):
+    def _program(self, task):
+        lines = [ln[4:] for ln in task["prompt"] if ln.startswith("    ")]
+        return "\n".join(lines) + "\n"
+
+    def test_expected_matches_subprocess_execution(self):
+        for s in range(1, 9):
+            for d in LEVELS:
+                t = g.GENERATORS["T3"](s, d)
+                self.assertEqual(t["class"], "T3-moderate-reasoning")
+                code = self._program(t)
+                self.assertIn("print(process(", code)
+                out = subprocess.run([sys.executable, "-c", code], capture_output=True,
+                                     text=True, timeout=30)
+                self.assertEqual(out.returncode, 0, out.stderr)
+                self.assertEqual(_answer(t), [out.stdout.strip()], (s, d))
+
+    def test_difficulty_lengthens_the_opcode_string(self):
+        def length(t):
+            return len(re.search(r"print\(process\('([A-Z]+)'\)\)", self._program(t)).group(1))
+        for s in SEEDS:
+            sizes = [length(g.GENERATORS["T3"](s, d)) for d in LEVELS]
             self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
 
 
