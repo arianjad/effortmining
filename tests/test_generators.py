@@ -6,6 +6,7 @@ generator's own computation: a re-parse of the prompt (T1), int(s, b) (T2), runn
 the printed program in a subprocess (T3), brute-force enumeration (T4), and a
 multi-pass evaluator over the authoritative definitions (multi-hop).
 """
+import itertools
 import os
 import re
 import subprocess
@@ -140,6 +141,36 @@ class T3ProgramTracingTest(unittest.TestCase):
             return len(re.search(r"print\(process\('([A-Z]+)'\)\)", self._program(t)).group(1))
         for s in SEEDS:
             sizes = [length(g.GENERATORS["T3"](s, d)) for d in LEVELS]
+            self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
+
+
+class T4ConstrainedCountingTest(unittest.TestCase):
+    def _params(self, task):
+        p = _prompt(task)
+        n = int(re.search(r"strings of length (\d+)", p).group(1))
+        alphabet = re.search(r"alphabet \{([^}]*)\}", p).group(1).split(", ")
+        r = int(re.search(r"run of (\d+) or more", p).group(1))
+        w = re.search(r"substring '([^']+)'", p).group(1)
+        return n, alphabet, r, w
+
+    def test_expected_matches_brute_force(self):
+        for s in SEEDS:
+            for d in LEVELS:
+                t = g.GENERATORS["T4"](s, d)
+                self.assertEqual(t["class"], "T4-hard-reasoning")
+                n, alphabet, r, w = self._params(t)
+                run = re.compile(r"(.)\1{%d}" % (r - 1))
+                count = sum(1 for tup in itertools.product(alphabet, repeat=n)
+                            for st in ["".join(tup)]
+                            if not run.search(st) and w not in st)
+                self.assertEqual(_answer(t), [str(count)], (s, d))
+
+    def test_difficulty_grows_search_space(self):
+        for s in SEEDS:
+            sizes = []
+            for d in LEVELS:
+                n, alphabet, _, _ = self._params(g.GENERATORS["T4"](s, d))
+                sizes.append(len(alphabet) ** n)
             self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
 
 

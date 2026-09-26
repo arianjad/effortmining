@@ -176,8 +176,58 @@ def gen_t3_program_tracing(seed: int, difficulty: int = 1) -> dict:
                  "multiply branches and a position-weighted sum; one slip changes the integer.")
 
 
+# --------------------------------------------------------------------------- #
+# T4: constrained counting (T4b's no-long-run count plus a forbidden word)     #
+# --------------------------------------------------------------------------- #
+_T4_SHAPE = {1: (2, 7), 2: (2, 9), 3: (3, 7), 4: (3, 8), 5: (3, 10)}  # d -> (k, n)
+_T4_RUN = 3
+
+
+def _t4_count(n: int, alphabet: list, r: int, w: str) -> int:
+    """Suffix-state DP (not enumeration): keep the last max(r, |w|) - 1 chars."""
+    keep = max(r, len(w)) - 1
+    counts = {"": 1}
+    for _ in range(n):
+        nxt: dict = {}
+        for suf, c in counts.items():
+            for ch in alphabet:
+                s = suf + ch
+                if s.endswith(ch * r) or s.endswith(w):
+                    continue
+                nxt[s[-keep:]] = nxt.get(s[-keep:], 0) + c
+        counts = nxt
+    return sum(counts.values())
+
+
+def gen_t4_constrained_counting(seed: int, difficulty: int = 1) -> dict:
+    rng = random.Random(f"T4|{seed}|{difficulty}")
+    d = difficulty
+    k, n = _T4_SHAPE[d]
+    alphabet = sorted(rng.sample("ABCDEFGHKMNPRSTUVWXYZ", k))
+    while True:
+        w = "".join(rng.choice(alphabet) for _ in range(3))
+        if len(set(w)) > 1:  # an all-same word would duplicate the run rule
+            break
+    prompt = [
+        f"Consider strings of length {n} over the alphabet {{{', '.join(alphabet)}}}.",
+        "",
+        f"Count how many such strings satisfy BOTH conditions:",
+        f"  1. no run of {_T4_RUN} or more identical characters in a row appears anywhere;",
+        f"  2. the substring '{w}' does not appear anywhere.",
+        "",
+        "Work out the exact count.",
+        "",
+        ANSWER_TAIL.format(what="single integer"),
+    ]
+    return _task("T4", "T4-hard-reasoning", seed, d, "Count strings avoiding long runs and a word",
+                 prompt, [str(_t4_count(n, alphabet, _T4_RUN, w))], 900 + 300 * d,
+                 f"{k}^{n} = {k ** n} strings: too many to list by hand, so it needs a "
+                 "suffix-state recurrence that tracks runs and partial matches of the word.")
+
+
 GENERATORS = {
     "T1": gen_t1_counting,
     "T2": gen_t2_base_conversion,
     "T3": gen_t3_program_tracing,
+    "T4": gen_t4_constrained_counting,
 }
