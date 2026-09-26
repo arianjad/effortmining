@@ -95,9 +95,12 @@ FIDELITY_RETRIES = 2         # retries when requested != effective / unverified 
 # plausible envelopes. Real runs read tokens from the CLI envelope.
 MOCK_BASE_OUT = {"low": 120, "medium": 400, "high": 1000, "xhigh": 2200, "max": 4500}
 
-# Scale options (04 Section 3.2). `classes=None` means all four classes.
+# Scale options (04 Section 3.2). `classes=None` means all four classes. Optional
+# `tiers` restricts the matrix to a subset of TIERS (absent = all five); analyze,
+# report and calibrate treat a tier with no data as n/a.
 SCALES = {
     "pilot":    {"reps": 3, "classes": None},
+    "pilot4":   {"reps": 3, "classes": None, "tiers": ["low", "medium", "high", "xhigh"]},
     "fallback": {"reps": 2, "classes": None},
     "reduced":  {"reps": 3, "classes": {"T1-mechanical", "T2-simple-transform"}},
     "extended": {"reps": 5, "classes": None},
@@ -355,11 +358,12 @@ def build_cells(tasks: list[dict], scale: str) -> list[dict]:
         raise SystemExit(f"unknown scale {scale!r}; choose from {list(SCALES)}")
     spec = SCALES[scale]
     reps, class_filter = spec["reps"], spec["classes"]
+    tiers = spec.get("tiers") or TIERS
     cells = []
     for t in tasks:
         if class_filter is not None and t["class"] not in class_filter:
             continue
-        for tier in TIERS:
+        for tier in tiers:
             for rep in range(1, reps + 1):
                 cells.append({"task": t, "tier": tier, "rep": rep})
     return cells
@@ -1856,7 +1860,9 @@ def analyze_core(tasks: dict, graded: list[dict], seed: int) -> dict:
         #   flag              — pre-registered rule: p_max <= p_xhigh AND max tokens up
         #   strict_regression — the stronger p_max <  p_xhigh (quality actually drops)
         # strict_regression implies flag; the two are worded differently downstream.
-        ot_flag = ot_strict = False
+        # Both are None (n/a) when max or xhigh has no data for this class, e.g. a
+        # tier-scoped scale that never ran max: absence is not "not observed".
+        ot_flag = ot_strict = None
         dmax, dxh = pooled.get((cls, "max")), pooled.get((cls, "xhigh"))
         if dmax and dxh and dmax["n"] and dxh["n"]:
             m_max = statistics.median(dmax["out"]) if dmax["out"] else 0
@@ -1896,6 +1902,10 @@ def analyze_core(tasks: dict, graded: list[dict], seed: int) -> dict:
                 "uniform_max": "max", "uniform_low": "low"}[policy]
 
     policy_names = ["inherit_xhigh", "uniform_high", "calibrated", "uniform_max", "uniform_low"]
+    # A tier-scoped run without max omits uniform_max: keeping it would drop every
+    # task from the comparable set and null the whole policy comparison.
+    if "max" not in tiers_present:
+        policy_names.remove("uniform_max")
     assign = {p: {tid: policy_tier_for(tid, p) for tid in task_ids} for p in policy_names}
 
     # Honest matrix (review M3): a task is comparable only if it has data under
@@ -2082,8 +2092,11 @@ def build_calibration_warnings(per_class: dict, mode: str) -> list:
 
 def _overthinking_flag(ot) -> bool:
     """Read the pre-registered (<=) overthinking flag from either the new
-    {flag, strict_regression} dict or the legacy bare bool (review M4 back-compat)."""
-    return bool(ot.get("flag")) if isinstance(ot, dict) else bool(ot)
+    {flag, strict_regression} dict or the legacy bare bool (review M4 back-compat).
+    None means n/a (max or xhigh has no data) and is passed through."""
+    if isinstance(ot, dict):
+        return None if ot.get("flag") is None else bool(ot["flag"])
+    return None if ot is None else bool(ot)
 
 
 def build_calibration(analysis: dict, tasks: dict, runs: int | None = None) -> dict:
@@ -2419,7 +2432,7 @@ def render_report(analysis: dict, tasks: dict) -> str:
         L.append("```")
         rec = info["recommended_tier"]
         extra = []
-        if info.get("ceiling_tier") and info["ceiling_tier"] != "max":
+        if info.get("ceiling_tier") and info["ceiling_tier"] != "max" and "max" in tiers:
             extra.append(f"ceiling tier is {info['ceiling_tier']} (not max)")
         if info.get("equivalence_low") is True:
             extra.append("low is statistically equivalent to ceiling (TOST)")
@@ -2478,8 +2491,11 @@ def render_report(analysis: dict, tasks: dict) -> str:
              "curves; a recommended tier below the ceiling indicates saturation.")
     ot = [c for c in m["classes"]
           if _overthinking_flag(analysis["per_class"][c].get("overthinking"))]
+    ot_na = all(_overthinking_flag(analysis["per_class"][c].get("overthinking")) is None
+                for c in m["classes"])
     L.append("- H3 (overthinking tail at max): "
-             + (f"flagged for {', '.join(ot)}" if ot else "not observed") + ".")
+             + ("n/a (no max-vs-xhigh data in this run)" if ot_na
+                else f"flagged for {', '.join(ot)}" if ot else "not observed") + ".")
     L.append("")
 
     # 5. Policy headline (RQ3 — three-baseline Pareto A/B)
@@ -2545,7 +2561,9 @@ def render_report(analysis: dict, tasks: dict) -> str:
     L.append("```")
     L.append(f"{'policy':<18} {'out tokens':>12} {'agg pass':>9}")
     for p in ["uniform_low", "uniform_high", "calibrated", "inherit_xhigh", "uniform_max"]:
-        pol = analysis["policies"][p]
+        pol = analysis["policies"].get(p)
+        if pol is None:
+            continue  # tier-scoped run without that policy's tier
         L.append(f"{p:<18} {pol['out_tokens']:>12.0f} {_fmt_pct(pol['agg_pass']):>9}")
     L.append("```")
     L.append("")
