@@ -90,16 +90,17 @@ For each subtask, map its class to `recommended_tier`, then map the tier to the 
 
 | tier | agent (`subagent_type`) |
 |---|---|
-| low | `miner-low` |
-| medium | `miner-medium` |
-| high | `miner-high` |
-| xhigh | `miner-xhigh` |
-| max | `miner-max` |
+| low | `effortmining:miner-low` |
+| medium | `effortmining:miner-medium` |
+| high | `effortmining:miner-high` |
+| xhigh | `effortmining:miner-xhigh` |
+| max | `effortmining:miner-max` |
 
-Dispatch with the Agent/Task tool. **The tier is applied by the choice of `subagent_type`: the miner agent's frontmatter `effort:` sets the reasoning level. Do not pass an `effort` argument to the tool; there is none.** Use the dispatch formula: state the role, the exact subtask, the inputs to re-anchor from disk, and the required output format; tell the worker to return the raw result as its final message.
+Dispatch with the Agent/Task tool. **The tier is applied by the choice of `subagent_type`: the miner agent's frontmatter `effort:` sets the reasoning level (verified 2026-09-26: the child's `CLAUDE_EFFORT` reads the miner's tier, not the parent's). Do not pass an `effort` argument to the tool; there is none.** Use the plugin-namespaced agent name (a plugin-loaded agent is addressed `<plugin>:<agent>`) and pass `model` explicitly: `opus`, the model the table was calibrated on. Omitting it inherits the session model, which skews the calibration and is denied by role guards such as thinker-worker. Use the dispatch formula: state the role, the exact subtask, the inputs to re-anchor from disk, and the required output format; tell the worker to return the raw result as its final message.
 
 ```
-Agent(subagent_type="miner-<tier>",
+Agent(subagent_type="effortmining:miner-<tier>",
+      model="opus",
       description="<3-5 word label>",
       prompt="<the subtask, self-contained: what to do, which files/inputs to read from disk, the exact output format required, and 'return only the result as your final message'>")
 ```
@@ -115,7 +116,7 @@ After a subtask's worker returns, append one JSONL record to `$DLOG`. Today this
 Record shape (controlled-vocabulary fields only; do NOT put raw subtask prompt text in the log, it is both an injection surface and noise):
 
 ```json
-{"ts":"<ISO-8601 UTC>","source":"effortmine","session_id":"<if known, else null>","task_class":"T3-moderate-reasoning","tier":"high","subagent_type":"miner-high","table_version":1,"accepted":null}
+{"ts":"<ISO-8601 UTC>","source":"effortmine","session_id":"<if known, else null>","task_class":"T3-moderate-reasoning","tier":"high","subagent_type":"effortmining:miner-high","table_version":1,"accepted":null}
 ```
 
 `accepted` is `null` unless you also ran the artifact past `effort-grader` (optional here; the benchmark path in `/effort-bench` is where grading is systematic). `table_version` echoes the `version` of the table you dispatched from, so a refit can tell default-driven dispatches from calibrated ones.
