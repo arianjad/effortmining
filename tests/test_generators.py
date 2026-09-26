@@ -23,7 +23,10 @@ import effort as e  # noqa: E402
 import generators as g  # noqa: E402
 
 SEEDS = range(1, 21)
-LEVELS = (1, 2, 3, 4, 5)
+LEVELS = tuple(range(1, 11))
+# sha256 of json(gen(s, d), sort_keys) over GENERATORS x seeds 1..3 x d 1..5, taken
+# at af069d6 before d6..10 existed: extending the knob must not change old tasks.
+GOLDEN_D1_5 = "5c8ce0aff2e4ae206a03a7550d120ae74775e431c883dab38d37b7ced18bb30f"
 
 
 def _prompt(task):
@@ -36,6 +39,24 @@ def _answer(task):
 
 class CommonContractTest(unittest.TestCase):
     """Every generator: deterministic by seed, seed-sensitive, gradeable."""
+
+    def test_d1_to_d5_tasks_unchanged(self):
+        import hashlib
+        import json
+        h = hashlib.sha256()
+        for gen in g.GENERATORS.values():
+            for s in (1, 2, 3):
+                for d in range(1, 6):
+                    h.update(json.dumps(gen(s, d), sort_keys=True).encode())
+        self.assertEqual(h.hexdigest(), GOLDEN_D1_5)
+
+    def test_cli_accepts_max_difficulty(self):
+        tmp = tempfile.mkdtemp(prefix="gen-dmax-")
+        try:
+            self.assertEqual(g.main([tmp, "--difficulty", str(g.MAX_DIFFICULTY)]), 0)
+            self.assertEqual(g.MAX_DIFFICULTY, LEVELS[-1])
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
     def test_same_seed_same_task(self):
         for key, gen in g.GENERATORS.items():
@@ -156,16 +177,52 @@ class T4ConstrainedCountingTest(unittest.TestCase):
         w = re.search(r"substring '([^']+)'", p).group(1)
         return n, alphabet, r, w
 
-    def test_expected_matches_brute_force(self):
+    @staticmethod
+    def _brute(n, alphabet, r, w):
+        run = re.compile(r"(.)\1{%d}" % (r - 1))
+        return sum(1 for tup in itertools.product(alphabet, repeat=n)
+                   for st in ["".join(tup)] if not run.search(st) and w not in st)
+
+    @staticmethod
+    def _automaton(n, alphabet, r, w):
+        """Count via states (last char, run length, matched prefix of w); unlike the
+        generator's literal-suffix DP, this never stores string suffixes."""
+        def advance(j, ch):
+            s = w[:j] + ch
+            return next(k for k in range(min(len(w), j + 1), -1, -1) if s.endswith(w[:k]))
+        states = {(None, 0, 0): 1}
+        for _ in range(n):
+            nxt = {}
+            for (last, run, j), c in states.items():
+                for ch in alphabet:
+                    run2 = run + 1 if ch == last else 1
+                    j2 = advance(j, ch)
+                    if run2 >= r or j2 == len(w):
+                        continue
+                    nxt[(ch, run2, j2)] = nxt.get((ch, run2, j2), 0) + c
+            states = nxt
+        return sum(states.values())
+
+    def test_automaton_oracle_matches_brute_force(self):
+        # Validates the large-d oracle on every shape small enough to enumerate.
+        checked = 0
+        for s in SEEDS:
+            for d in LEVELS:
+                n, alphabet, r, w = self._params(g.GENERATORS["T4"](s, d))
+                if len(alphabet) ** n <= 60000:
+                    self.assertEqual(self._automaton(n, alphabet, r, w),
+                                     self._brute(n, alphabet, r, w), (s, d))
+                    checked += 1
+        self.assertGreater(checked, 0)
+
+    def test_expected_matches_oracle(self):
         for s in SEEDS:
             for d in LEVELS:
                 t = g.GENERATORS["T4"](s, d)
                 self.assertEqual(t["class"], "T4-hard-reasoning")
                 n, alphabet, r, w = self._params(t)
-                run = re.compile(r"(.)\1{%d}" % (r - 1))
-                count = sum(1 for tup in itertools.product(alphabet, repeat=n)
-                            for st in ["".join(tup)]
-                            if not run.search(st) and w not in st)
+                small = len(alphabet) ** n <= 60000
+                count = (self._brute if small else self._automaton)(n, alphabet, r, w)
                 self.assertEqual(_answer(t), [str(count)], (s, d))
 
     def test_difficulty_grows_search_space(self):

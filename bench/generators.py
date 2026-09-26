@@ -3,8 +3,8 @@
 
 Each generator is `gen(seed, difficulty=1) -> task dict` in the bench/tasks JSON shape
 (exact checker, <answer> sentinel tags). Same seed -> identical task; the difficulty
-knob (1..5) strictly grows a structural measure (distractors, digits, program length,
-search space, hops). Write a set for `effort.py --tasks-dir`:
+knob (1..10) strictly grows a structural measure (distractors, digits, program length,
+search space, hops): linearly through d5, then doubling (see `_size`). Write a set for `effort.py --tasks-dir`:
 
     python bench/generators.py OUT_DIR [--seed 1] [--n 3] [--difficulty 2]
 
@@ -19,6 +19,13 @@ import random
 import sys
 
 EXACT_CANON = "strip_outer_ws;rstrip_each_line"
+MAX_DIFFICULTY = 10
+
+
+def _size(d: int) -> int:
+    """Structural size for difficulty d: d through 5 (so d1..5 tasks are unchanged),
+    then 5 * 2**(d-5). Opus 5.5 at low effort passed every d<=5 task (pilot 2026-09-26)."""
+    return d if d <= 5 else 5 * 2 ** (d - 5)
 ANSWER_TAIL = "Output ONLY the {what} between <answer> and </answer> tags."
 
 
@@ -48,10 +55,10 @@ _FAIL = ["charge failed code=5012", "write conflict code=4090", "timeout code=50
 
 def gen_t1_counting(seed: int, difficulty: int = 1) -> dict:
     rng = random.Random(f"T1|{seed}|{difficulty}")
-    d = difficulty
+    d, z = difficulty, _size(difficulty)
     target = rng.choice(_SERVICES)
     others = [s for s in _SERVICES if s != target]
-    n_match = rng.randint(1, 2 + d)
+    n_match = rng.randint(1, 2 + z)
     rows = [("ERROR", target, rng.choice(_FAIL)) for _ in range(n_match)]
     # Distractors: each contains the target service name or the word error but is
     # not a match. 2d or 2d+1 of them, so the count strictly grows with d.
@@ -62,9 +69,9 @@ def gen_t1_counting(seed: int, difficulty: int = 1) -> dict:
         lambda: ("error", target, rng.choice(_FAIL)),
         lambda: ("INFO", target, rng.choice(_CALM)),
     ]
-    rows += [rng.choice(kinds)() for _ in range(2 * d + rng.randint(0, 1))]
+    rows += [rng.choice(kinds)() for _ in range(2 * z + rng.randint(0, 1))]
     rows += [(rng.choice(["INFO", "WARN", "DEBUG"]), rng.choice(others), rng.choice(_CALM))
-             for _ in range(4 + 2 * d)]
+             for _ in range(4 + 2 * z)]
     rng.shuffle(rows)
     log = [f"2026-03-01T08:{12 + i // 60:02d}:{i % 60:02d}Z {lvl:<5} {svc:<17} {msg}"
            for i, (lvl, svc, msg) in enumerate(rows)]
@@ -96,7 +103,7 @@ _BASES = [2, 3, 5, 7, 8, 12, 16, 20, 36]
 def gen_t2_base_conversion(seed: int, difficulty: int = 1) -> dict:
     rng = random.Random(f"T2|{seed}|{difficulty}")
     d = difficulty
-    length = 2 + d  # digits per numeral: the difficulty knob
+    length = 2 + _size(d)  # digits per numeral: the difficulty knob
     items, values = [], []
     for _ in range(3):
         b = rng.choice(_BASES)
@@ -161,7 +168,7 @@ def _t3_run(seq: str) -> int:
 def gen_t3_program_tracing(seed: int, difficulty: int = 1) -> dict:
     rng = random.Random(f"T3|{seed}|{difficulty}")
     d = difficulty
-    seq = "".join(rng.choice("AABDXXSM") for _ in range(4 + 4 * d))
+    seq = "".join(rng.choice("AABDXXSM") for _ in range(4 + 4 * _size(d)))
     prompt = [
         "The Python program below processes a string of opcodes with a list used as a",
         "stack. Determine exactly what it prints.",
@@ -175,7 +182,7 @@ def gen_t3_program_tracing(seed: int, difficulty: int = 1) -> dict:
         ANSWER_TAIL.format(what="printed value"),
     ]
     return _task("T3", "T3-moderate-reasoning", seed, d, "Trace an extended stack-machine program",
-                 prompt, [str(_t3_run(seq))], 600 + 150 * d,
+                 prompt, [str(_t3_run(seq))], 600 + 150 * _size(d),
                  f"State tracking over {len(seq)} opcodes with guarded pop/increment/swap/"
                  "multiply branches and a position-weighted sum; one slip changes the integer.")
 
@@ -183,7 +190,8 @@ def gen_t3_program_tracing(seed: int, difficulty: int = 1) -> dict:
 # --------------------------------------------------------------------------- #
 # T4: constrained counting (T4b's no-long-run count plus a forbidden word)     #
 # --------------------------------------------------------------------------- #
-_T4_SHAPE = {1: (2, 7), 2: (2, 9), 3: (3, 7), 4: (3, 8), 5: (3, 10)}  # d -> (k, n)
+_T4_SHAPE = {1: (2, 7), 2: (2, 9), 3: (3, 7), 4: (3, 8), 5: (3, 10),  # d -> (k, n)
+             6: (3, 13), 7: (4, 11), 8: (4, 14), 9: (5, 14), 10: (5, 18)}
 _T4_RUN = 3
 
 
@@ -240,9 +248,12 @@ _WORDS = ["ALPHA", "BRAVO", "CEDAR", "DELTA", "EMBER", "FJORD", "GAMMA", "HELIX"
 
 def gen_rh_multihop(seed: int, difficulty: int = 1) -> dict:
     rng = random.Random(f"RH|{seed}|{difficulty}")
-    d = difficulty
-    hops = 2 + d
-    names = rng.sample(_WORDS, hops + 1)
+    d, z = difficulty, _size(difficulty)
+    hops = 2 + z
+    # Past 16 names, add underscore-joined pairs (the prompt's NAME grammar is [A-Z_]+).
+    pool = _WORDS if hops + 1 <= len(_WORDS) else _WORDS + [
+        f"{a}_{b}" for a in _WORDS for b in _WORDS if a != b]
+    names = rng.sample(pool, hops + 1)
     value = rng.randint(20, 60)
     values = {names[0]: value}
     defs = {names[0]: str(value)}
@@ -255,7 +266,7 @@ def gen_rh_multihop(seed: int, difficulty: int = 1) -> dict:
             f"  {n}_MIN = {rng.randint(1, 9)}" for n in names]
     # Superseded drafts pin a chain name to a stale literal != its true value; every
     # op downstream is injective, so following any draft changes the final answer.
-    for _ in range(d):
+    for _ in range(z):
         n = rng.choice(names)
         stale = values[n] + rng.choice([-5, -4, -3, -2, -1, 1, 2, 3, 4, 5])
         docs.append(f"Document status: SUPERSEDED DRAFT (do not use)\nDefinitions:\n"
@@ -278,8 +289,8 @@ def gen_rh_multihop(seed: int, difficulty: int = 1) -> dict:
         ANSWER_TAIL.format(what="line"),
     ]
     return _task("RH", "R-research", seed, d, "Trace a variable through multi-hop definitions",
-                 prompt, [f"VALUE: {values[target]}"], 800 + 200 * d,
-                 f"{hops} hops across separate notes with {d} superseded draft(s) that "
+                 prompt, [f"VALUE: {values[target]}"], 800 + 200 * z,
+                 f"{hops} hops across separate notes with {z} superseded draft(s) that "
                  "redefine chain variables; following any draft changes the answer.",
                  documents=documents)
 
@@ -315,7 +326,7 @@ def main(argv=None) -> int:
     p.add_argument("out_dir")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--n", type=int, default=1, help="tasks per generator")
-    p.add_argument("--difficulty", type=int, default=1, choices=range(1, 6))
+    p.add_argument("--difficulty", type=int, default=1, choices=range(1, MAX_DIFFICULTY + 1))
     p.add_argument("--only", default=None, help=f"comma-separated subset of {list(GENERATORS)}")
     a = p.parse_args(argv)
     keys = a.only.split(",") if a.only else None

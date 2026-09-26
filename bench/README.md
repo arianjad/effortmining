@@ -194,23 +194,25 @@ python3 bench/effort.py report         --suite v2      # writes bench/RESULTS-v2
 ## Generated task sets (`generators.py`)
 
 `bench/generators.py` (stdlib only) builds exact-checked tasks in the `tasks/` JSON
-shape, deterministic by seed, with a difficulty knob 1..5 that strictly grows one
-structural measure:
+shape, deterministic by seed, with a difficulty knob 1..10 that strictly grows one
+structural measure, linearly through d5 and doubling after it (`_size`; d1..5 tasks
+are unchanged by the extension):
 
 | key | class | task | knob grows | test oracle |
 |---|---|---|---|---|
 | `T1` | T1-mechanical | count exact ERROR lines for one service | near-miss distractors | re-parse of the log |
 | `T2` | T2-simple-transform | three mixed-base numerals to base 10 | digits per numeral | `int(s, b)` |
 | `T3` | T3-moderate-reasoning | trace the T3c stack machine + swap/multiply | opcode count | run the printed program in a subprocess |
-| `T4` | T4-hard-reasoning | count strings with no run ≥ 3 and no forbidden word | `k^n` search space | brute-force enumeration |
+| `T4` | T4-hard-reasoning | count strings with no run ≥ 3 and no forbidden word | `k^n` search space | brute-force enumeration; an automaton DP (validated against brute force) where `k^n` > 60000 |
 | `RH` | R-research | multi-hop variable tracing across notes, with superseded drafts | hops | multi-pass evaluator |
 
 `RH` keeps the `R-research` label with an exact checker, like the shipped R1/R4–R6:
 grading dispatches on `checker.type`, so it never reaches the blind grader. Keep
 generated sets in their own directory, not pooled with the real suites, and give them
 their own `--root`: v1 `analyze`/`calibrate` rewrite `<root>/state/calibration.json`
-from whatever classes the task dir holds. Difficulty is structural only and has not
-been tuned against real runs.
+from whatever classes the task dir holds. Difficulty is structural only. Pilot 2026-09-26 (Opus 5.5, `low`, stripped +
+worker context, n=2 per generator per level): 50/50 pass at d1..5, which is why d6..10
+exist; d6..10 are not yet tuned against real runs.
 
 ```bash
 python3 bench/generators.py /tmp/gen --seed 1 --n 3 --difficulty 2   # [--only T3,T4]
