@@ -2,6 +2,7 @@
 """Tests for the arian/windows-compat fork seams of bench/effort.py: tier-scoped
 scales, stripped run mode, and the Windows-safe sandbox."""
 import argparse
+import json
 import os
 import shutil
 import sys
@@ -124,6 +125,89 @@ class BuildClaudeCmdTest(unittest.TestCase):
             e.subprocess.run = orig
         self.assertEqual(seen, [e.build_claude_cmd("P", "low", "m", "cap.json", True,
                                                    "ctx.md")])
+
+
+class StrippedRunModeTest(unittest.TestCase):
+    """--stripped / --worker-context reach every claude call made during run/grade.
+    invoke_claude and detect_cli_version are faked: no real claude process runs."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="effort-stripped-")
+        self.tasks = os.path.join(self.tmp, "tasks")
+        os.makedirs(self.tasks)
+        shutil.copy(os.path.join(TASKS_DIR, "T1a.json"), self.tasks)
+        self.ctx = os.path.join(self.tmp, "worker.md")
+        with open(self.ctx, "w", encoding="utf-8") as f:
+            f.write("You are a delegate worker.\n")
+        self.calls = []
+        self._orig = (e.invoke_claude, e.detect_cli_version)
+
+        def fake_invoke(prompt, tier, model, timeout_s, env, settings_path=None, **kw):
+            self.calls.append({"tier": tier, "settings_path": settings_path, **kw})
+            env_json = {"result": "<answer>x</answer>", "session_id": "s", "effort": tier,
+                        "usage": {"input_tokens": 1, "output_tokens": 1}}
+            if "GRADE THIS PAYLOAD" in prompt:
+                env_json["result"] = '{"criteria": [], "score": 1.0, "pass": true}'
+            return e._SandboxResult(0, json.dumps(env_json), "", False)
+
+        e.invoke_claude = fake_invoke
+        e.detect_cli_version = lambda: "fake"
+
+    def tearDown(self):
+        e.invoke_claude, e.detect_cli_version = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_run_passes_stripped_and_worker_context(self):
+        ns = _ns(self.tmp, tasks_dir=self.tasks, mock=False, force=True,
+                 stripped=True, worker_context=self.ctx)
+        self.assertEqual(e.cmd_run(ns), 0)
+        self.assertEqual(len(self.calls), 5 * 3)
+        for c in self.calls:
+            self.assertIs(c.get("stripped"), True)
+            self.assertEqual(c.get("append_system_prompt_file"), os.path.abspath(self.ctx))
+            self.assertTrue(c["settings_path"])  # capture hook still installed
+
+    def test_blind_grader_honors_stripped_without_worker_context(self):
+        shutil.copy(os.path.join(HERE, "fixtures-v2", "R2_blind.json"), self.tasks)
+        os.remove(os.path.join(self.tasks, "T1a.json"))
+        ns = _ns(self.tmp, tasks_dir=self.tasks, mock=False, force=True, suite="v2",
+                 grade_mock=False, stripped=True, worker_context=self.ctx)
+        self.assertEqual(e.cmd_run(ns), 0)
+        del self.calls[:]
+        self.assertEqual(e.cmd_grade(ns), 0)
+        self.assertEqual(len(self.calls), 5 * 3)  # one grader call per cell
+        for c in self.calls:
+            self.assertEqual(c["tier"], e.GRADER_EFFORT)
+            self.assertIs(c.get("stripped"), True)
+            # The worker's context is not the grader's: blindness by payload shape.
+            self.assertIsNone(c.get("append_system_prompt_file"))
+
+    def test_run_composite_passes_stripped_and_worker_context(self):
+        shutil.copy(os.path.join(HERE, "fixtures-v2", "X1_composite.json"), self.tasks)
+        ns = _ns(self.tmp, tasks_dir=self.tasks, mock=False, force=True, suite="v2",
+                 arms="uniform_high", reps=1, stripped=True, worker_context=self.ctx)
+        self.assertEqual(e.cmd_run_composite(ns), 0)
+        self.assertTrue(self.calls)
+        for c in self.calls:
+            self.assertIs(c.get("stripped"), True)
+            self.assertEqual(c.get("append_system_prompt_file"), os.path.abspath(self.ctx))
+
+    def test_cli_flags_on_run_grade_and_run_composite(self):
+        p = e.build_parser()
+        for sub in ("run", "run-composite", "grade"):
+            a = p.parse_args([sub, "--stripped", "--worker-context", "w.md"])
+            self.assertIs(a.stripped, True, sub)
+            self.assertEqual(a.worker_context, "w.md", sub)
+            d = p.parse_args([sub])
+            self.assertIs(d.stripped, False, sub)
+            self.assertIsNone(d.worker_context, sub)
+
+    def test_missing_worker_context_file_is_a_hard_error(self):
+        ns = _ns(self.tmp, tasks_dir=self.tasks, mock=False, force=True,
+                 stripped=True, worker_context=os.path.join(self.tmp, "nope.md"))
+        with self.assertRaises(SystemExit):
+            e.cmd_run(ns)
+        self.assertEqual(self.calls, [])
 
 
 if __name__ == "__main__":

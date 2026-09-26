@@ -737,7 +737,8 @@ def _extract_first_json_object(text: str):
     return None
 
 
-def invoke_grader(prompt: str, model: str, env: dict, timeout_s: int) -> tuple:
+def invoke_grader(prompt: str, model: str, env: dict, timeout_s: int,
+                  stripped: bool = False) -> tuple:
     """Call the blind grader (claude -p --effort medium). Parse defensively; a parse
     failure is retried once, then flagged. Returns (verdict|None, meta).
 
@@ -748,7 +749,8 @@ def invoke_grader(prompt: str, model: str, env: dict, timeout_s: int) -> tuple:
     tin = tout = 0
     cost = 0.0
     while True:
-        res = invoke_claude(prompt, GRADER_EFFORT, model, timeout_s, env)
+        # Stripped runs strip the grader too, but never hand it the worker context.
+        res = invoke_claude(prompt, GRADER_EFFORT, model, timeout_s, env, stripped=stripped)
         env_json = None
         if res.returncode == 0 and res.stdout.strip():
             try:
@@ -793,7 +795,8 @@ def mock_grader_verdict(artifact: str, checker: dict) -> tuple:
 
 
 def grade_blind(task: dict, raw: str, *, grade_mock: bool, model: str,
-                env: dict | None = None, timeout_s: int = GRADER_TIMEOUT_S) -> dict:
+                env: dict | None = None, timeout_s: int = GRADER_TIMEOUT_S,
+                stripped: bool = False) -> dict:
     """Grade a blind-grader cell -> a grade dict mergeable into the run record.
 
     A grader parse failure after one retry is `grading_error`, NOT a task fail:
@@ -808,7 +811,7 @@ def grade_blind(task: dict, raw: str, *, grade_mock: bool, model: str,
     if grade_mock:
         verdict, meta = mock_grader_verdict(raw or "", checker)
     else:
-        verdict, meta = invoke_grader(prompt, model, env or {}, timeout_s)
+        verdict, meta = invoke_grader(prompt, model, env or {}, timeout_s, stripped)
     grading = {"grading_source": meta.get("grading_source", "grader"),
                "grading_input_tokens": meta.get("grading_input_tokens", 0),
                "grading_output_tokens": meta.get("grading_output_tokens", 0),
@@ -1208,7 +1211,8 @@ def latest_by_key(records: list[dict]) -> dict:
 # --------------------------------------------------------------------------- #
 def execute_cell(cell: dict, *, mock: bool, scale: str, seed: int, model: str,
                  cli_version: str, env: dict, paths: Paths,
-                 settings_path: str | None = None, sidecar: str | None = None) -> dict:
+                 settings_path: str | None = None, sidecar: str | None = None,
+                 stripped: bool = False, worker_context: str | None = None) -> dict:
     task, tier, rep = cell["task"], cell["tier"], cell["rep"]
     nonce = uuid.uuid4().hex
     prompt = f"[run-id: {nonce}]\n\n" + task["prompt_text"]
@@ -1231,7 +1235,8 @@ def execute_cell(cell: dict, *, mock: bool, scale: str, seed: int, model: str,
     fidelity_retries = 0
     last_detail = ""
     while True:
-        res = invoke_claude(prompt, tier, model, RUN_TIMEOUT_S, env, settings_path)
+        res = invoke_claude(prompt, tier, model, RUN_TIMEOUT_S, env, settings_path,
+                            stripped=stripped, append_system_prompt_file=worker_context)
         env_json = None
         if res.returncode == 0 and res.stdout.strip():
             try:
@@ -1283,8 +1288,19 @@ def execute_cell(cell: dict, *, mock: bool, scale: str, seed: int, model: str,
                             detail=last_detail.strip() or "unknown failure")
 
 
+def run_mode(args) -> tuple[bool, str | None]:
+    """(stripped, absolute worker-context path) from --stripped / --worker-context."""
+    ctx = getattr(args, "worker_context", None)
+    if ctx:
+        ctx = os.path.abspath(ctx)
+        if not os.path.isfile(ctx):
+            raise SystemExit(f"--worker-context file not found: {ctx}")
+    return bool(getattr(args, "stripped", False)), ctx
+
+
 def cmd_run(args) -> int:
     suite = getattr(args, "suite", "v1")
+    stripped, worker_context = run_mode(args)
     paths = Paths(args.root, args.tasks_dir, suite)
     paths.ensure()
     tasks = load_tasks(paths.tasks)
@@ -1364,7 +1380,8 @@ def cmd_run(args) -> int:
         futs = {ex.submit(execute_cell, c, mock=args.mock, scale=args.scale,
                           seed=args.seed, model=args.model, cli_version=cli_version,
                           env=env, paths=paths, settings_path=settings_path,
-                          sidecar=sidecar): c for c in todo}
+                          sidecar=sidecar, stripped=stripped,
+                          worker_context=worker_context): c for c in todo}
         invalid = 0
         for fut in concurrent.futures.as_completed(futs):
             rec = fut.result()
@@ -1485,7 +1502,8 @@ def subtask_prompt_text(subtask: dict) -> str:
 
 
 def execute_composite_subtask(*, composite_id, subtask, arm, tier, rep, mock, seed,
-                              model, cli_version, env, paths, settings_path, sidecar) -> dict:
+                              model, cli_version, env, paths, settings_path, sidecar,
+                              stripped=False, worker_context=None) -> dict:
     """Run one subtask of one X-task under one arm/rep, then grade it inline with its
     own deterministic checker. Returns one record (v1 schema + composite fields)."""
     sub_task = {"id": subtask["id"], "class": subtask.get("class", COMPOSITE_CLASS),
@@ -1509,7 +1527,8 @@ def execute_composite_subtask(*, composite_id, subtask, arm, tier, rep, mock, se
     else:
         retries = 0
         while True:
-            res = invoke_claude(prompt, tier, model, RUN_TIMEOUT_S, env, settings_path)
+            res = invoke_claude(prompt, tier, model, RUN_TIMEOUT_S, env, settings_path,
+                                stripped=stripped, append_system_prompt_file=worker_context)
             env_json = None
             if res.returncode == 0 and res.stdout.strip():
                 try:
@@ -1564,6 +1583,7 @@ def cmd_run_composite(args) -> int:
     seed = int(getattr(args, "seed", SEED_DEFAULT))
     mock = bool(getattr(args, "mock", False))
     model = getattr(args, "model", MODEL)
+    stripped, worker_context = run_mode(args)
 
     # Phase 0 (v2) hard gate for real runs, mirroring cmd_run.
     if not mock:
@@ -1620,7 +1640,8 @@ def cmd_run_composite(args) -> int:
             rec = execute_composite_subtask(
                 composite_id=xt["id"], subtask=sub, arm=arm, tier=tier, rep=rep,
                 mock=mock, seed=seed, model=model, cli_version=cli_version, env=env,
-                paths=paths, settings_path=settings_path, sidecar=sidecar)
+                paths=paths, settings_path=settings_path, sidecar=sidecar,
+                stripped=stripped, worker_context=worker_context)
             append_jsonl(paths.results_composite, rec)
             out.append(rec)
         return out
@@ -1700,7 +1721,8 @@ def cmd_grade(args) -> int:
                 continue
             if task["checker"]["type"] == "blind-grader":
                 g = grade_blind(task, raw, grade_mock=grade_mock,
-                                model=getattr(args, "model", MODEL), env=grade_env)
+                                model=getattr(args, "model", MODEL), env=grade_env,
+                                stripped=bool(getattr(args, "stripped", False)))
             else:
                 g = grade_record(task, raw)
             merged = {**rec, **g}
@@ -3594,6 +3616,15 @@ def build_parser() -> argparse.ArgumentParser:
         sp.add_argument("--suite", choices=list(SUITES), default=default,
                         help="task suite: v1 (default) or v2 (R/C/X classes)")
 
+    def add_mode(sp):
+        sp.add_argument("--stripped", action="store_true",
+                        help="isolate each claude call from host settings/MCP "
+                             "(--setting-sources \"\" --strict-mcp-config); "
+                             "also applies to the blind grader")
+        sp.add_argument("--worker-context", default=None,
+                        help="file passed as --append-system-prompt-file to worker "
+                             "calls (never to the grader)")
+
     v = sub.add_parser("validate", help="Phase 0 instrument gate")
     v.add_argument("--mock", action="store_true", help="fabricate probes, no real calls")
     v.add_argument("--model", default=MODEL)
@@ -3612,6 +3643,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.add_argument("--force", action="store_true",
                    help="bypass the Phase 0 hard gate (loud warning)")
     add_suite(r)
+    add_mode(r)
     r.set_defaults(func=cmd_run)
 
     rc = sub.add_parser("run-composite",
@@ -3626,6 +3658,7 @@ def build_parser() -> argparse.ArgumentParser:
     rc.add_argument("--force", action="store_true",
                     help="bypass the Phase 0 (v2) hard gate (loud warning)")
     add_suite(rc, default="v2")
+    add_mode(rc)
     rc.set_defaults(func=cmd_run_composite)
 
     g = sub.add_parser("grade", help="apply checkers to results (incl. blind grader for v2)")
@@ -3634,6 +3667,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="deterministic offline blind-grader verdicts (no model call)")
     g.add_argument("--model", default=MODEL, help="model for the blind grader")
     add_suite(g)
+    add_mode(g)
     g.set_defaults(func=cmd_grade)
 
     a = sub.add_parser("analyze", help="stats, NI decisions, policy comparison")
