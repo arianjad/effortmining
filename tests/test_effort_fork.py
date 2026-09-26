@@ -231,6 +231,10 @@ class SandboxTreeKillTest(unittest.TestCase):
         t0 = time.monotonic()
         res = e.run_sandboxed(program, 2)
         elapsed = time.monotonic() - t0
+        if "BlockingIOError" in res.stderr:
+            # POSIX sandbox's RLIMIT_NPROC=64 is UID-wide; on some hosts (seen on
+            # WSL2) the grandchild fork gets EAGAIN, so the tree path is unreachable.
+            self.skipTest("sandbox RLIMIT_NPROC blocked the grandchild spawn")
         self.assertTrue(res.timed_out)
         self.assertLess(elapsed, 4.0)
         # Positive control: the grandchild really ran, so its absence below is a kill.

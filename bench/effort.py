@@ -656,10 +656,11 @@ def _kill_tree(proc, job, close: bool = False) -> None:
 def run_sandboxed(program: str, timeout_s: int) -> _SandboxResult:
     """Run model-generated `program` in an isolated subprocess.
 
-    Honest scope: this is subprocess isolation, NOT a jail. We use `python3 -I -S`
-    (isolated mode: ignores env/PYTHONPATH/user-site), a fresh temp CWD, a minimal
-    env, POSIX resource limits (CPU seconds, address space), and a wall-clock
-    timeout. Network is not hard-blocked on macOS without a sandbox profile; the
+    Honest scope: this is subprocess isolation, NOT a jail. We use `python -X utf8
+    -I -S` (UTF-8 stdio; isolated mode: ignores env/PYTHONPATH/user-site), a fresh
+    temp CWD, a minimal env, POSIX resource limits (CPU seconds, address space; none
+    on Windows), and a wall-clock timeout that kills the whole process tree (POSIX
+    process group / Windows kill-on-close Job Object). Network is not hard-blocked on macOS without a sandbox profile; the
     residual risk is low (benign, model-generated coding tasks) and documented in
     RESULTS.md. On Linux/CI, wrap the interpreter in `unshare -n` for true network
     isolation. Model code is executed ONLY here.
@@ -2727,8 +2728,9 @@ def render_report(analysis: dict, tasks: dict) -> str:
              "`wrong_answer`, so format-only failures are distinguished from "
              "reasoning failures.")
     L.append("- **Sandbox honesty.** pytest checks run under subprocess isolation "
-             "(`python3 -I -S`, minimal env, CPU/address-space limits, wall "
-             "timeout) — not a jail. Network is not hard-blocked on macOS; residual "
+             "(`python -X utf8 -I -S`, minimal env, POSIX CPU/address-space limits, "
+             "wall timeout that kills the process tree) — not a jail. Network is not "
+             "hard-blocked on macOS; residual "
              "risk is low for benign model-generated code. Wrap in `unshare -n` on "
              "Linux/CI for true isolation.")
     misclassed_all = [(cls, x["task_id"])

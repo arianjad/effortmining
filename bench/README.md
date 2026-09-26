@@ -36,8 +36,12 @@ For the v2 suite (R-research / C-coding / X-composite), see
 [Suite v2](#suite-v2--r-research--c-coding--x-composite) below.
 
 `--scale` is one of `pilot` (n=3, 180 runs, recommended), `fallback` (n=2, 120),
-`reduced` (T1+T2 only, n=3, 90 — good for shaking out the harness), or `extended`
-(n=5, 300 — for undecided classes). `run` is **resumable**: re-invoking it skips
+`reduced` (T1+T2 only, n=3, 90 — good for shaking out the harness), `extended`
+(n=5, 300 — for undecided classes), or `pilot4` (n=3, tiers `low..xhigh` only, 144 —
+no `max` cells). A scale may carry an optional `tiers` list in `SCALES`; on a run
+without `max`, `analyze`/`report`/`calibrate` mark the H3 max-vs-xhigh overthinking
+check n/a (`null`) and omit the `uniform_max` policy instead of failing or reading
+zeros. `validate` still probes all five tiers. `run` is **resumable**: re-invoking it skips
 cells already recorded with a non-error result, so an interrupted sweep never
 re-bills completed work.
 
@@ -66,6 +70,13 @@ re-bills completed work.
   the raw answer text to `raw/answers/<run_id>.txt`. Resumable by default; `--rerun-failed`
   also re-runs cells whose graded verdict was a quality fail. `--mock` fabricates
   deterministic envelopes (per seed) so the pipeline is fully testable offline.
+  `--stripped` runs every `claude` call with `--setting-sources "" --strict-mcp-config`
+  (no user/project/local settings, CLAUDE.md, plugins, hooks or MCP servers from the
+  host install; the effort-capture `--settings` file is still passed), and
+  `--worker-context <file>` passes `--append-system-prompt-file <file>` to each worker
+  call. The same flags exist on `run-composite`; on `grade`, `--stripped` also strips
+  the blind grader, which never receives the worker context. `validate` probes and
+  the v2 long-context probe are not stripped.
 
 - **`grade`** — Applies each task's checker to the latest non-error result per cell.
   Exact tasks: extract the first `<answer>…</answer>`, canonicalize (`strip_outer_ws`;
@@ -84,7 +95,8 @@ re-bills completed work.
   difference-CI guard at δ=10pp) to pick the cheapest non-inferior tier per class;
   adds a **TOST equivalence test** for easy classes T1/T2 (H1, upgrading confidence to
   `high(equiv)` when `low` is provably within ±10pp of the ceiling) and an
-  **overthinking flag** (H3). The RQ3 policy comparison scores calibrated against
+  **overthinking flag** (H3; `null` = n/a when a class has no `max` or `xhigh` data).
+  The RQ3 policy comparison scores calibrated against
   **three** baselines — inherit@`xhigh`, uniform-`high`, uniform-`low` — with seeded
   stratified-bootstrap CIs and a **Pareto un-dominated** victory verdict. Writes
   `state/analysis.json` and the v1 `state/calibration.json`.
@@ -179,6 +191,35 @@ python3 bench/effort.py calibrate      --suite v2      # merges R/C into calibra
 python3 bench/effort.py report         --suite v2      # writes bench/RESULTS-v2.md
 ```
 
+## Generated task sets (`generators.py`)
+
+`bench/generators.py` (stdlib only) builds exact-checked tasks in the `tasks/` JSON
+shape, deterministic by seed, with a difficulty knob 1..5 that strictly grows one
+structural measure:
+
+| key | class | task | knob grows | test oracle |
+|---|---|---|---|---|
+| `T1` | T1-mechanical | count exact ERROR lines for one service | near-miss distractors | re-parse of the log |
+| `T2` | T2-simple-transform | three mixed-base numerals to base 10 | digits per numeral | `int(s, b)` |
+| `T3` | T3-moderate-reasoning | trace the T3c stack machine + swap/multiply | opcode count | run the printed program in a subprocess |
+| `T4` | T4-hard-reasoning | count strings with no run ≥ 3 and no forbidden word | `k^n` search space | brute-force enumeration |
+| `RH` | R-research | multi-hop variable tracing across notes, with superseded drafts | hops | multi-pass evaluator |
+
+`RH` keeps the `R-research` label with an exact checker, like the shipped R1/R4–R6:
+grading dispatches on `checker.type`, so it never reaches the blind grader. Keep
+generated sets in their own directory, not pooled with the real suites, and give them
+their own `--root`: v1 `analyze`/`calibrate` rewrite `<root>/state/calibration.json`
+from whatever classes the task dir holds. Difficulty is structural only and has not
+been tuned against real runs.
+
+```bash
+python3 bench/generators.py /tmp/gen --seed 1 --n 3 --difficulty 2   # [--only T3,T4]
+python3 bench/effort.py --root /tmp/genroot --tasks-dir /tmp/gen run --scale pilot4 --mock
+```
+
+Task ids are `G<key>-<seed>-d<difficulty>`; each task also carries
+`generator: {name, seed, difficulty}`.
+
 ## State-file map
 
 Paths are relative to `--root` (default: this directory, `bench/`). Tasks are read
@@ -236,8 +277,13 @@ gates the whole matrix on requested == effective for all five tiers.
 ## The grade sandbox — honest scope
 
 pytest checks run the assembled `extracted code + hidden asserts` as
-`python3 -I -S <tmpfile>` in a fresh temp CWD, with a minimal env, POSIX resource
-limits (CPU seconds, address space), and a wall-clock timeout. This is **subprocess
+`python -X utf8 -I -S <tmpfile>` in a fresh temp CWD, with a minimal env, POSIX resource
+limits (CPU seconds, address space; none on Windows), and a wall-clock timeout. Stdio is
+UTF-8 on every host (`-X utf8` in the child, UTF-8 decode with `errors="replace"` in the
+parent). A timeout kills the **whole process tree**: the child leads its own session and
+is `killpg`-ed on POSIX; on Windows it runs in a Job Object with
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`. Stragglers of a clean exit are reaped the same way.
+There is no memory cap on Windows. This is **subprocess
 isolation, not a jail**: on macOS, network is not hard-blocked without a sandbox
 profile. The residual risk is low (benign, model-generated coding tasks) and is
 documented in `RESULTS.md`. On Linux/CI, wrap the interpreter in `unshare -n`
@@ -247,7 +293,7 @@ executed **only** here — never elsewhere in the harness.
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests    # 117 unit tests (80 v1 + 37 v2)
+python3 -m unittest discover -s tests    # 186 tests at be4c258 (80 v1, 39 v2, 39 hooks, 12 fork, 16 generators)
 python3 bench/effort.py selftest              # offline end-to-end invariants (v1)
 python3 bench/effort.py selftest --suite v2   # offline end-to-end invariants (v2)
 ```
@@ -259,7 +305,13 @@ overthinking flag, TOST equivalence, the dual-source dispatch-log normalization,
 effort-fidelity validity, resumability, seeded-shuffle and bootstrap determinism,
 atomic-write crash-safety, env sanitization, answer parsing, and both graders.
 
-The v2 suite (`tests/test_effort_v2.py`, 37 tests, over tiny fixtures in
+`tests/test_effort_fork.py` covers the tier-scoped `pilot4` mock pipeline, the
+`build_claude_cmd` argv (default and stripped), `--stripped/--worker-context` plumbing
+through `run`, `run-composite` and the blind grader (with `claude` faked), and the
+sandbox's tree kill and UTF-8 stdio. `tests/test_generators.py` checks each generator
+against an independent oracle (see Generated task sets).
+
+The v2 suite (`tests/test_effort_v2.py`, 39 tests, over tiny fixtures in
 `tests/fixtures-v2/`) covers `--suite` path isolation (v1 files untouched), document
 prepending + token accounting, the blind-grader payload's structural blindness
 (asserted on the constructed prompt), the grader parse-failure taxonomy, composite
