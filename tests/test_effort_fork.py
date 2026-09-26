@@ -7,6 +7,7 @@ import os
 import shutil
 import sys
 import tempfile
+import time
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -208,6 +209,34 @@ class StrippedRunModeTest(unittest.TestCase):
         with self.assertRaises(SystemExit):
             e.cmd_run(ns)
         self.assertEqual(self.calls, [])
+
+
+class SandboxTreeKillTest(unittest.TestCase):
+    """A sandbox timeout must kill the whole process tree, not just the child."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="effort-sbx-test-")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_timeout_kills_grandchild(self):
+        marker = os.path.join(self.tmp, "grandchild-survived")
+        started = os.path.join(self.tmp, "grandchild-started")
+        grandchild = (f"import time; open({started!r}, 'w').write('x'); "
+                      f"time.sleep(6); open({marker!r}, 'w').write('x')")
+        program = ("import subprocess, sys, time\n"
+                   f"subprocess.Popen([sys.executable, '-c', {grandchild!r}])\n"
+                   "time.sleep(30)\n")
+        t0 = time.monotonic()
+        res = e.run_sandboxed(program, 2)
+        elapsed = time.monotonic() - t0
+        self.assertTrue(res.timed_out)
+        self.assertLess(elapsed, 4.0)
+        # Positive control: the grandchild really ran, so its absence below is a kill.
+        self.assertTrue(os.path.exists(started), "grandchild never started")
+        time.sleep(7)  # past the grandchild's 6 s sleep
+        self.assertFalse(os.path.exists(marker), "grandchild outlived the timeout")
 
 
 if __name__ == "__main__":

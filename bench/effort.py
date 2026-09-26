@@ -581,6 +581,78 @@ def _sandbox_preexec(cpu_s: int):
     return _apply
 
 
+def _win_kill_on_close_job(proc):
+    """Put `proc` in a Windows Job Object with JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, so
+    closing (or terminating) the job kills the child and every descendant it spawned.
+    Returns the job handle."""
+    import ctypes
+    from ctypes import wintypes
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.restype = wintypes.HANDLE
+    k32.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
+    k32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int,
+                                            ctypes.c_void_p, wintypes.DWORD]
+    k32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+
+    class _Basic(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                    ("PerJobUserTimeLimit", ctypes.c_int64),
+                    ("LimitFlags", wintypes.DWORD),
+                    ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t),
+                    ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t),
+                    ("PriorityClass", wintypes.DWORD),
+                    ("SchedulingClass", wintypes.DWORD)]
+
+    class _Extended(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _Basic),
+                    ("IoInfo", ctypes.c_uint64 * 6),
+                    ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t),
+                    ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                    ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    job = k32.CreateJobObjectW(None, None)
+    if not job:
+        raise ctypes.WinError(ctypes.get_last_error())
+    info = _Extended()
+    info.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    ok = k32.SetInformationJobObject(job, 9,  # JobObjectExtendedLimitInformation
+                                     ctypes.byref(info), ctypes.sizeof(info))
+    # ponytail: assigned right after Popen, not via CREATE_SUSPENDED; a child that
+    # spawns within microseconds of start could escape. Python startup is ~10 ms.
+    ok = ok and k32.AssignProcessToJobObject(job, int(proc._handle))
+    if not ok:
+        err = ctypes.get_last_error()
+        k32.CloseHandle(wintypes.HANDLE(job))
+        raise ctypes.WinError(err)
+    return job
+
+
+def _kill_tree(proc, job, close: bool = False) -> None:
+    """Kill the child and all its descendants: the job (Windows) or the process
+    group (POSIX, the child leads its own session). `close=True` also releases the
+    job handle (kill-on-close then reaps any straggler)."""
+    if job is not None:
+        import ctypes
+        from ctypes import wintypes
+        k32 = ctypes.WinDLL("kernel32")
+        k32.TerminateJobObject(wintypes.HANDLE(job), 1)
+        if close:
+            k32.CloseHandle(wintypes.HANDLE(job))
+    elif os.name == "posix":
+        import signal
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
 def run_sandboxed(program: str, timeout_s: int) -> _SandboxResult:
     """Run model-generated `program` in an isolated subprocess.
 
@@ -598,18 +670,29 @@ def run_sandboxed(program: str, timeout_s: int) -> _SandboxResult:
         with open(src, "w", encoding="utf-8") as f:
             f.write(program)
         env = {"PATH": "/usr/bin:/bin", "HOME": workdir, "LC_ALL": "C", "TMPDIR": workdir}
+        posix = os.name == "posix"
+        proc = subprocess.Popen(
+            [sys.executable, "-I", "-S", src],
+            cwd=workdir, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True,
+            # POSIX: own session so a timeout can killpg the whole tree, plus rlimits.
+            # Windows has neither; there the tree is held by a kill-on-close Job
+            # Object and the sandbox is -I -S + fresh CWD + minimal env + timeout.
+            start_new_session=posix,
+            preexec_fn=_sandbox_preexec(timeout_s) if posix else None)
+        job = None
         try:
-            proc = subprocess.run(
-                [sys.executable, "-I", "-S", src],
-                cwd=workdir, env=env, capture_output=True, text=True,
-                timeout=timeout_s,
-                # preexec_fn (and the POSIX rlimits it applies) does not exist on
-                # Windows; there the sandbox degrades to -I -S + fresh CWD +
-                # minimal env + wall-clock timeout.
-                preexec_fn=_sandbox_preexec(timeout_s) if os.name == "posix" else None)
-            return _SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)
-        except subprocess.TimeoutExpired as e:
-            return _SandboxResult(-1, e.stdout or "", e.stderr or "", True)
+            if not posix:
+                job = _win_kill_on_close_job(proc)
+            try:
+                out, err = proc.communicate(timeout=timeout_s)
+                return _SandboxResult(proc.returncode, out, err, False)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc, job)
+                out, err = proc.communicate()
+                return _SandboxResult(-1, out or "", err or "", True)
+        finally:
+            _kill_tree(proc, job, close=True)  # reap stragglers of a clean exit too
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
 
