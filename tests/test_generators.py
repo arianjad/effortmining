@@ -6,11 +6,14 @@ generator's own computation: a re-parse of the prompt (T1), int(s, b) (T2), runn
 the printed program in a subprocess (T3), brute-force enumeration (T4), and a
 multi-pass evaluator over the authoritative definitions (multi-hop).
 """
+import argparse
 import itertools
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -229,6 +232,40 @@ class MultiHopTracingTest(unittest.TestCase):
                 fooled = dict(t, documents=[{"title": "m", "content": "status: AUTHORITATIVE\n"
                               + "\n".join(f"  {n} = {x}" for n, x in merged.items())}])
                 self.assertNotEqual(self._resolve(fooled)[0], self._resolve(t)[0], (s, d))
+
+
+class TaskSetWriterTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="effort-gen-")
+        self.out = os.path.join(self.tmp, "tasks")
+
+    def tearDown(self):
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_cli_writes_a_set_the_harness_runs_via_tasks_dir(self):
+        cli = subprocess.run([sys.executable, os.path.join(BENCH, "generators.py"), self.out,
+                              "--seed", "3", "--n", "2", "--difficulty", "2"],
+                             capture_output=True, text=True, timeout=60)
+        self.assertEqual(cli.returncode, 0, cli.stderr)
+        tasks = e.load_tasks(self.out)
+        self.assertEqual(len(tasks), 2 * len(g.GENERATORS))
+        self.assertEqual(len({t["id"] for t in tasks}), len(tasks))
+        for t in tasks:
+            self.assertTrue(os.path.exists(os.path.join(self.out, t["id"] + ".json")))
+            self.assertEqual(t["generator"]["difficulty"], 2)
+        # --seed 3 --n 2 writes seeds 3 and 4, identical to the function API.
+        self.assertEqual(g.GENERATORS["T3"](4, 2)["prompt"],
+                         e.load_json(os.path.join(self.out, "GT3-4-d2.json"))["prompt"])
+        # Usable end to end through the harness's --tasks-dir (mock, no claude).
+        ns = argparse.Namespace(root=self.tmp, tasks_dir=self.out, seed=e.SEED_DEFAULT,
+                                model=e.MODEL, mock=True, scale="pilot4", parallel=1,
+                                rerun_failed=False, regrade=False, force=False)
+        e.cmd_run(ns)
+        e.cmd_grade(ns)
+        graded, _ = e.read_jsonl(e.Paths(self.tmp, self.out).graded)
+        self.assertEqual(len(graded), len(tasks) * 4 * 3)
+        self.assertTrue(all(r["failure_class"] in ("none", "wrong_answer") for r in graded))
+        self.assertEqual(e.cmd_analyze(ns), 0)
 
 
 if __name__ == "__main__":

@@ -12,7 +12,11 @@ Difficulty is structural only; it is not tuned against real runs (that is a pilo
 """
 from __future__ import annotations
 
+import argparse
+import json
+import os
 import random
+import sys
 
 EXACT_CANON = "strip_outer_ws;rstrip_each_line"
 ANSWER_TAIL = "Output ONLY the {what} between <answer> and </answer> tags."
@@ -287,3 +291,38 @@ GENERATORS = {
     "T4": gen_t4_constrained_counting,
     "RH": gen_rh_multihop,
 }
+
+
+def write_task_set(out_dir: str, seed: int = 1, n: int = 1, difficulty: int = 1,
+                   keys=None) -> list[str]:
+    """Write n tasks per generator (seeds seed..seed+n-1) as <id>.json into out_dir,
+    a directory `effort.py --tasks-dir` can run. Returns the written paths."""
+    os.makedirs(out_dir, exist_ok=True)
+    paths = []
+    for key in keys or GENERATORS:
+        for s in range(seed, seed + n):
+            t = GENERATORS[key](s, difficulty)
+            path = os.path.join(out_dir, t["id"] + ".json")
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(t, f, indent=2)
+                f.write("\n")
+            paths.append(path)
+    return paths
+
+
+def main(argv=None) -> int:
+    p = argparse.ArgumentParser(description="write a generated task set for --tasks-dir")
+    p.add_argument("out_dir")
+    p.add_argument("--seed", type=int, default=1)
+    p.add_argument("--n", type=int, default=1, help="tasks per generator")
+    p.add_argument("--difficulty", type=int, default=1, choices=range(1, 6))
+    p.add_argument("--only", default=None, help=f"comma-separated subset of {list(GENERATORS)}")
+    a = p.parse_args(argv)
+    keys = a.only.split(",") if a.only else None
+    paths = write_task_set(a.out_dir, a.seed, a.n, a.difficulty, keys)
+    print(f"[generators] wrote {len(paths)} task(s) to {a.out_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
