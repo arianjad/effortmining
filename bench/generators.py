@@ -82,6 +82,42 @@ def gen_t1_counting(seed: int, difficulty: int = 1) -> dict:
                  "(canary services, ERROR inside messages, lowercase levels) grow with difficulty.")
 
 
+# --------------------------------------------------------------------------- #
+# T2: base conversion                                                          #
+# --------------------------------------------------------------------------- #
+_DIGITS = "0123456789abcdefghijklmnopqrstuvwxyz"
+_BASES = [2, 3, 5, 7, 8, 12, 16, 20, 36]
+
+
+def gen_t2_base_conversion(seed: int, difficulty: int = 1) -> dict:
+    rng = random.Random(f"T2|{seed}|{difficulty}")
+    d = difficulty
+    length = 2 + d  # digits per numeral: the difficulty knob
+    items, values = [], []
+    for _ in range(3):
+        b = rng.choice(_BASES)
+        digits = [rng.randrange(1, b)] + [rng.randrange(b) for _ in range(length - 1)]
+        value = 0
+        for x in digits:
+            value = value * b + x
+        items.append(("".join(_DIGITS[x] for x in digits), b))
+        values.append(str(value))
+    prompt = [
+        "Convert each numeral below to base 10. Digits above 9 are the letters a..z",
+        "(a = 10, b = 11, ..., z = 35).",
+        "",
+        *[f"  {i}. {s} (base {b})" for i, (s, b) in enumerate(items, 1)],
+        "",
+        "Output one base-10 integer per line, in the same order, with no other text.",
+        ANSWER_TAIL.format(what="result lines"),
+    ]
+    return _task("T2", "T2-simple-transform", seed, d, "Convert numerals to base 10",
+                 prompt, values, 600,
+                 f"Positional-notation transform of three {length}-digit numerals in mixed "
+                 "bases; digit count grows with difficulty.")
+
+
 GENERATORS = {
     "T1": gen_t1_counting,
+    "T2": gen_t2_base_conversion,
 }

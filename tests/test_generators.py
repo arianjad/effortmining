@@ -97,5 +97,25 @@ class T1CountingTest(unittest.TestCase):
             self.assertEqual(counts, sorted(set(counts)), (s, counts))
 
 
+class T2BaseConversionTest(unittest.TestCase):
+    def _numerals(self, task):
+        return re.findall(r"^\s*\d+\.\s+([0-9a-z]+) \(base (\d+)\)$", _prompt(task), re.M)
+
+    def test_expected_matches_int_oracle(self):
+        for s in SEEDS:
+            for d in LEVELS:
+                t = g.GENERATORS["T2"](s, d)
+                self.assertEqual(t["class"], "T2-simple-transform")
+                nums = self._numerals(t)
+                self.assertGreaterEqual(len(nums), 2)
+                self.assertEqual(_answer(t), [str(int(x, int(b))) for x, b in nums], (s, d))
+
+    def test_difficulty_adds_digits(self):
+        for s in SEEDS:
+            sizes = [sum(len(x) for x, _ in self._numerals(g.GENERATORS["T2"](s, d)))
+                     for d in LEVELS]
+            self.assertEqual(sizes, sorted(set(sizes)), (s, sizes))
+
+
 if __name__ == "__main__":
     unittest.main()
