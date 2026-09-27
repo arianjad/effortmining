@@ -54,6 +54,13 @@ class TierScopedPipelineTest(unittest.TestCase):
         self.assertEqual({c["tier"] for c in cells}, {"low"})
         self.assertEqual(len(cells), len(tasks))
 
+    def test_build_cells_map4_is_four_tiers_single_rep(self):
+        # Effort x difficulty map: tasks are the replicates, one run per (task, tier).
+        tasks = e.load_tasks(TASKS_DIR)
+        cells = e.build_cells(tasks, "map4")
+        self.assertEqual({c["tier"] for c in cells}, FOUR_TIERS)
+        self.assertEqual(len(cells), len(tasks) * 4)
+
     def test_mock_pipeline_on_four_tier_scale(self):
         ns = _ns(self.tmp, scale="pilot4")
         self.assertEqual(e.cmd_validate(ns), 0)
