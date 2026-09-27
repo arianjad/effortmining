@@ -989,6 +989,10 @@ def invoke_claude(prompt: str, tier: str, model: str, timeout_s: int, env: dict,
                   append_system_prompt_file: str | None = None) -> _SandboxResult:
     cmd = build_claude_cmd(prompt, tier, model, settings_path, stripped,
                            append_system_prompt_file)
+    if stripped:
+        # --setting-sources "" still injects the host's auto-memory MEMORY.md
+        # (request body captured 2026-09-26); this switch removes it.
+        env = {**env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
         return _SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)

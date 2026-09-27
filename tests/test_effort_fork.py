@@ -135,6 +135,35 @@ class BuildClaudeCmdTest(unittest.TestCase):
                                                    "ctx.md")])
 
 
+class StrippedAutoMemoryTest(unittest.TestCase):
+    """Stripped runs must not see the host's auto-memory (MEMORY.md): --setting-sources ""
+    does not stop it (request body captured 2026-09-26); the env switch does."""
+
+    def _env_seen(self, stripped):
+        seen = []
+
+        class _P:
+            returncode, stdout, stderr = 0, "{}", ""
+
+        def fake_run(cmd, **kw):
+            seen.append(kw["env"])
+            return _P()
+
+        orig = e.subprocess.run
+        e.subprocess.run = fake_run
+        try:
+            e.invoke_claude("P", "low", "m", 5, {"PATH": "p"}, stripped=stripped)
+        finally:
+            e.subprocess.run = orig
+        return seen[0]
+
+    def test_stripped_disables_auto_memory(self):
+        self.assertEqual(self._env_seen(True).get("CLAUDE_CODE_DISABLE_AUTO_MEMORY"), "1")
+
+    def test_default_mode_leaves_env_alone(self):
+        self.assertEqual(self._env_seen(False), {"PATH": "p"})
+
+
 class StrippedRunModeTest(unittest.TestCase):
     """--stripped / --worker-context reach every claude call made during run/grade.
     invoke_claude and detect_cli_version are faked: no real claude process runs."""
