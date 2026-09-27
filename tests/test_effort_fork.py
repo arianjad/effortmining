@@ -91,25 +91,25 @@ class TierScopedPipelineTest(unittest.TestCase):
 
 
 class BuildClaudeCmdTest(unittest.TestCase):
-    def test_default_argv_is_the_legacy_command(self):
-        # Literal legacy argv from invoke_claude at 9561671.
+    def test_default_argv_is_the_legacy_command_minus_the_prompt(self):
+        # Legacy argv from invoke_claude at 9561671, with the prompt moved to stdin.
         self.assertEqual(
-            e.build_claude_cmd("PROMPT", "high", "m", settings_path="s.json"),
+            e.build_claude_cmd("high", "m", settings_path="s.json"),
             ["claude", "-p", "--effort", "high", "--model", "m",
-             "--output-format", "json", "--settings", "s.json", "PROMPT"])
+             "--output-format", "json", "--settings", "s.json"])
         self.assertEqual(
-            e.build_claude_cmd("PROMPT", "low", "m"),
+            e.build_claude_cmd("low", "m"),
             ["claude", "-p", "--effort", "low", "--model", "m",
-             "--output-format", "json", "PROMPT"])
+             "--output-format", "json"])
 
     def test_stripped_argv(self):
-        cmd = e.build_claude_cmd("PROMPT", "xhigh", "m", settings_path="cap.json",
+        cmd = e.build_claude_cmd("xhigh", "m", settings_path="cap.json",
                                  stripped=True, append_system_prompt_file="ctx.md")
         self.assertEqual(
             cmd,
             ["claude", "-p", "--effort", "xhigh", "--model", "m",
              "--output-format", "json", "--setting-sources", "", "--strict-mcp-config",
-             "--settings", "cap.json", "--append-system-prompt-file", "ctx.md", "PROMPT"])
+             "--settings", "cap.json", "--append-system-prompt-file", "ctx.md"])
         # The empty setting-sources value must be its own argv element.
         i = cmd.index("--setting-sources")
         self.assertEqual(cmd[i + 1], "")
@@ -121,18 +121,34 @@ class BuildClaudeCmdTest(unittest.TestCase):
             returncode, stdout, stderr = 0, "{}", ""
 
         def fake_run(cmd, **kw):
-            seen.append(cmd)
+            seen.append((cmd, kw.get("input")))
             return _P()
+
+        long_prompt = "x" * 40000  # past the ~32k Windows command-line cap
+        orig = e.subprocess.run
+        e.subprocess.run = fake_run
+        try:
+            e.invoke_claude(long_prompt, "low", "m", 5, {}, "cap.json", stripped=True,
+                            append_system_prompt_file="ctx.md")
+        finally:
+            e.subprocess.run = orig
+        self.assertEqual(seen, [(e.build_claude_cmd("low", "m", "cap.json", True, "ctx.md"),
+                                 long_prompt)])
+
+    def test_launch_failure_reports_the_os_error(self):
+        # WinError 206 (command line too long) subclasses FileNotFoundError; it must
+        # not be reported as a missing CLI.
+        def fake_run(cmd, **kw):
+            raise FileNotFoundError(206, "The filename or extension is too long")
 
         orig = e.subprocess.run
         e.subprocess.run = fake_run
         try:
-            e.invoke_claude("P", "low", "m", 5, {}, "cap.json", stripped=True,
-                            append_system_prompt_file="ctx.md")
+            res = e.invoke_claude("P", "low", "m", 5, {})
         finally:
             e.subprocess.run = orig
-        self.assertEqual(seen, [e.build_claude_cmd("P", "low", "m", "cap.json", True,
-                                                   "ctx.md")])
+        self.assertEqual(res.returncode, 127)
+        self.assertIn("too long", res.stderr)
 
 
 class StrippedAutoMemoryTest(unittest.TestCase):
@@ -162,6 +178,46 @@ class StrippedAutoMemoryTest(unittest.TestCase):
 
     def test_default_mode_leaves_env_alone(self):
         self.assertEqual(self._env_seen(False), {"PATH": "p"})
+
+
+class ChildEnvEffortTest(unittest.TestCase):
+    def test_session_effort_readout_is_not_inherited(self):
+        # CLAUDE_EFFORT is the parent session's effort as Claude Code exports it; a child
+        # run must be governed by --effort alone.
+        env, _ = e.build_child_env({"CLAUDE_EFFORT": "high", "PATH": "p"})
+        self.assertNotIn("CLAUDE_EFFORT", env)
+        self.assertEqual(env["PATH"], "p")
+
+
+class ValidateStrippedTest(unittest.TestCase):
+    """validate --stripped probes the same configuration the stripped matrix runs."""
+
+    def test_validate_accepts_stripped(self):
+        p = e.build_parser()
+        self.assertIs(p.parse_args(["validate", "--stripped"]).stripped, True)
+        self.assertIs(p.parse_args(["validate"]).stripped, False)
+
+    def test_every_validate_probe_is_stripped(self):
+        tmp = tempfile.mkdtemp(prefix="effort-validate-")
+        calls = []
+        orig = (e.invoke_claude, e.detect_cli_version)
+
+        def fake_invoke(prompt, tier, model, timeout_s, env, settings_path=None, **kw):
+            calls.append(kw.get("stripped"))
+            env_json = {"result": "ok", "session_id": "s", "effort": tier,
+                        "usage": {"input_tokens": 1, "output_tokens": 1},
+                        "total_cost_usd": 0.0}
+            return e._SandboxResult(0, json.dumps(env_json), "", False)
+
+        e.invoke_claude, e.detect_cli_version = fake_invoke, (lambda: "fake")
+        try:
+            ns = _ns(tmp, mock=False, stripped=True)
+            e.cmd_validate(ns)
+        finally:
+            e.invoke_claude, e.detect_cli_version = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertTrue(calls)
+        self.assertEqual(set(calls), {True})
 
 
 class StrippedRunModeTest(unittest.TestCase):

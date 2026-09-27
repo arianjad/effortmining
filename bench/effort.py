@@ -406,6 +406,7 @@ def build_child_env(parent: dict | None = None) -> tuple[dict, dict]:
         "api_key_stripped": API_KEY_ENV in src,
     }
     src.pop(EFFORT_ENV_OVERRIDE, None)
+    src.pop("CLAUDE_EFFORT", None)  # parent session's effort readout; --effort governs
     src.pop(MAX_OUTPUT_TOKENS_ENV, None)
     src.pop(API_KEY_ENV, None)
     if EXTRA_BODY_ENV in src:
@@ -965,14 +966,16 @@ def detect_effective_effort(envelope: dict) -> str | None:
     return None
 
 
-def build_claude_cmd(prompt: str, tier: str, model: str, settings_path: str | None = None,
+def build_claude_cmd(tier: str, model: str, settings_path: str | None = None,
                      stripped: bool = False,
                      append_system_prompt_file: str | None = None) -> list[str]:
     """argv for one headless `claude` call. Stripped mode loads no user/project/local
     settings (`--setting-sources ""`, an empty argv element) and no MCP servers
     (`--strict-mcp-config`), so CLAUDE.md, plugins, hooks and skills from the host
     install cannot leak into the measured run; `--settings` (the effort-capture hook)
-    is still honored. `append_system_prompt_file` supplies the worker's context."""
+    is still honored. `append_system_prompt_file` supplies the worker's context. The
+    prompt itself goes over stdin (invoke_claude): Windows caps a command line at ~32k
+    chars, which long generated tasks exceed."""
     cmd = ["claude", "-p", "--effort", tier, "--model", model,
            "--output-format", "json"]
     if stripped:
@@ -981,25 +984,25 @@ def build_claude_cmd(prompt: str, tier: str, model: str, settings_path: str | No
         cmd += ["--settings", settings_path]
     if append_system_prompt_file:
         cmd += ["--append-system-prompt-file", append_system_prompt_file]
-    return cmd + [prompt]
+    return cmd
 
 
 def invoke_claude(prompt: str, tier: str, model: str, timeout_s: int, env: dict,
                   settings_path: str | None = None, stripped: bool = False,
                   append_system_prompt_file: str | None = None) -> _SandboxResult:
-    cmd = build_claude_cmd(prompt, tier, model, settings_path, stripped,
-                           append_system_prompt_file)
+    cmd = build_claude_cmd(tier, model, settings_path, stripped, append_system_prompt_file)
     if stripped:
         # --setting-sources "" still injects the host's auto-memory MEMORY.md
         # (request body captured 2026-09-26); this switch removes it.
         env = {**env, "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
     try:
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, env=env)
+        proc = subprocess.run(cmd, input=prompt, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", timeout=timeout_s, env=env)
         return _SandboxResult(proc.returncode, proc.stdout, proc.stderr, False)
     except subprocess.TimeoutExpired as e:
         return _SandboxResult(-1, e.stdout or "", e.stderr or "", True)
-    except FileNotFoundError:
-        return _SandboxResult(127, "", "claude CLI not found on PATH", False)
+    except FileNotFoundError as e:  # also WinError 206 (command line too long)
+        return _SandboxResult(127, "", f"claude launch failed: {e}", False)
 
 
 # ---- Effort-fidelity capture hook (04 Section 4.6) ------------------------- #
@@ -3210,7 +3213,8 @@ def _v2_validate_extras(args, env) -> tuple:
             usage, cost = ev["usage"], ev["total_cost_usd"]
         else:
             res = invoke_claude("[probe]\n\n" + probe["prompt_text"], tier, model,
-                                RUN_TIMEOUT_S, env)
+                                RUN_TIMEOUT_S, env,
+                                stripped=bool(getattr(args, "stripped", False)))
             ev = {}
             if res.returncode == 0 and res.stdout.strip():
                 try:
@@ -3227,6 +3231,7 @@ def _v2_validate_extras(args, env) -> tuple:
 
 
 def cmd_validate(args) -> int:
+    stripped = bool(getattr(args, "stripped", False))
     suite = getattr(args, "suite", "v1")
     paths = Paths(args.root, args.tasks_dir, suite)
     paths.ensure()
@@ -3296,7 +3301,7 @@ def cmd_validate(args) -> int:
         # 4.1 flag acceptance + 4.2 envelope enumeration
         for t in TIERS:
             res = invoke_claude("Reply with the single word: ok", t, args.model, 120,
-                                env, cap_settings)
+                                env, cap_settings, stripped=stripped)
             ev = None
             if res.returncode == 0 and res.stdout.strip():
                 try:
@@ -3312,7 +3317,8 @@ def cmd_validate(args) -> int:
         # 4.3 effort-modulation probe (x3 per tier) + 4.6 fidelity capture
         for t in TIERS:
             for _ in range(3):
-                res = invoke_claude(_PROBE, t, args.model, RUN_TIMEOUT_S, env, cap_settings)
+                res = invoke_claude(_PROBE, t, args.model, RUN_TIMEOUT_S, env, cap_settings,
+                                    stripped=stripped)
                 if res.returncode == 0 and res.stdout.strip():
                     try:
                         ev = json.loads(res.stdout)
@@ -3325,7 +3331,8 @@ def cmd_validate(args) -> int:
             times = []
             for _ in range(3):
                 s = time.time()
-                invoke_claude("Reply with the single word: ok", t, args.model, 120, env)
+                invoke_claude("Reply with the single word: ok", t, args.model, 120, env,
+                              stripped=stripped)
                 times.append((time.time() - s) * 1000)
             report["latency"][t] = {"mean_ms": statistics.mean(times) if times else 0}
 
@@ -3721,6 +3728,8 @@ def build_parser() -> argparse.ArgumentParser:
     v.add_argument("--mock", action="store_true", help="fabricate probes, no real calls")
     v.add_argument("--model", default=MODEL)
     v.add_argument("--seed", type=int, default=SEED_DEFAULT)
+    v.add_argument("--stripped", action="store_true",
+                   help="probe with the stripped run configuration")
     add_suite(v)
     v.set_defaults(func=cmd_validate)
 
