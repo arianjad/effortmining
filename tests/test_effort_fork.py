@@ -263,6 +263,40 @@ class FableReviewFixesTest(unittest.TestCase):
         self.assertNotIn("uniform_low", e.parse_arms(None))  # defaults unchanged
 
 
+class CompositeDocumentsTest(unittest.TestCase):
+    """X-composite documents live at the job level; every subtask prompt must carry them
+    (they were never sent: X1 answers read "postmortem not provided", 2026-09-27)."""
+
+    def test_every_subtask_prompt_carries_the_job_documents(self):
+        tmp = tempfile.mkdtemp(prefix="effort-xdocs-")
+        tasks = os.path.join(tmp, "tasks")
+        os.makedirs(tasks)
+        src = os.path.join(BENCH, "tasks-v2", "X1.json")
+        shutil.copy(src, tasks)
+        docs = json.load(open(src, encoding="utf-8"))["documents"]
+        prompts = []
+        orig = (e.invoke_claude, e.detect_cli_version)
+
+        def fake_invoke(prompt, tier, model, timeout_s, env, settings_path=None, **kw):
+            prompts.append(prompt)
+            env_json = {"result": "<answer>x</answer>", "session_id": "s",
+                        "usage": {"input_tokens": 1, "output_tokens": 1}}
+            return e._SandboxResult(0, json.dumps(env_json), "", False)
+
+        e.invoke_claude, e.detect_cli_version = fake_invoke, (lambda: "fake")
+        try:
+            ns = _ns(tmp, tasks_dir=tasks, mock=False, force=True, suite="v2",
+                     arms="uniform_high", reps=1, stripped=True, worker_context=None)
+            e.cmd_run_composite(ns)
+        finally:
+            e.invoke_claude, e.detect_cli_version = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+        self.assertEqual(len(prompts), 5)
+        for pr in prompts:
+            for d in docs:
+                self.assertIn(d["content"][:200], pr)
+
+
 class ChildEnvEffortTest(unittest.TestCase):
     def test_session_effort_readout_is_not_inherited(self):
         # CLAUDE_EFFORT is the parent session's effort as Claude Code exports it; a child

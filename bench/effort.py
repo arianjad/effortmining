@@ -1617,13 +1617,16 @@ def subtask_prompt_text(subtask: dict) -> str:
 
 def execute_composite_subtask(*, composite_id, subtask, arm, tier, rep, mock, seed,
                               model, cli_version, env, paths, settings_path, sidecar,
-                              stripped=False, worker_context=None) -> dict:
+                              stripped=False, worker_context=None, documents=None) -> dict:
     """Run one subtask of one X-task under one arm/rep, then grade it inline with its
     own deterministic checker. Returns one record (v1 schema + composite fields)."""
     sub_task = {"id": subtask["id"], "class": subtask.get("class", COMPOSITE_CLASS),
                 "checker": subtask["checker"], "prompt_text": subtask_prompt_text(subtask)}
     nonce = uuid.uuid4().hex
-    prompt = f"[run-id: {nonce}]\n\n" + sub_task["prompt_text"]
+    # The job's documents live at the X-task level; every subtask needs them.
+    block, _ = build_documents_block(documents)
+    body = (block + "\n" + sub_task["prompt_text"]) if block else sub_task["prompt_text"]
+    prompt = f"[run-id: {nonce}]\n\n" + body
     ts_start = _now()
     rid = composite_run_id(composite_id, arm, subtask["id"], tier, rep)
     rel_answer = os.path.join("raw", "answers", rid + ".txt")
@@ -1755,7 +1758,8 @@ def cmd_run_composite(args) -> int:
                 composite_id=xt["id"], subtask=sub, arm=arm, tier=tier, rep=rep,
                 mock=mock, seed=seed, model=model, cli_version=cli_version, env=env,
                 paths=paths, settings_path=settings_path, sidecar=sidecar,
-                stripped=stripped, worker_context=worker_context)
+                stripped=stripped, worker_context=worker_context,
+                documents=xt.get("documents"))
             append_jsonl(paths.results_composite, rec)
             out.append(rec)
         return out
