@@ -980,7 +980,9 @@ def build_claude_cmd(tier: str, model: str, settings_path: str | None = None,
     cmd = ["claude", "-p", "--effort", tier, "--model", model,
            "--output-format", "json"]
     if stripped:
-        cmd += ["--setting-sources", "", "--strict-mcp-config"]
+        # --tools "": no tools, so a task measures reasoning, not delegation to Python
+        # (map 2026-09-26: T2 d9 runs asked to run Bash and returned empty answers).
+        cmd += ["--setting-sources", "", "--strict-mcp-config", "--tools", ""]
     if settings_path:
         cmd += ["--settings", settings_path]
     if append_system_prompt_file:
@@ -1279,7 +1281,7 @@ def error_record(task: dict, tier: str, rep: int, *, scale: str, seed: int,
 def record_valid(rec: dict) -> bool:
     """A run counts toward its cell iff it is non-error AND effort-fidelity-verified
     (requested == effective, confirmed by the capture hook). 04 Sections 4.6, 5.1."""
-    return (not rec.get("api_error")) and bool(rec.get("fidelity_ok"))
+    return (not rec.get("api_error")) and bool(rec.get("fidelity_ok") or rec.get("timed_out"))
 
 
 def latest_by_key(records: list[dict]) -> dict:
@@ -1367,6 +1369,17 @@ def execute_cell(cell: dict, *, mock: bool, scale: str, seed: int, model: str,
                                       effort_effective=effective,
                                       effort_effective_source=source,
                                       document_tokens=doc_tokens)
+        if res.timed_out:
+            # Not finishing in RUN_TIMEOUT_S fails the tier: no retry, and not an
+            # api_error (excluding it made slow tiers look better, map 2026-09-26).
+            # No envelope, so tokens/cost are unknown (recorded as 0).
+            rec = error_record(task, tier, rep, scale=scale, seed=seed, nonce=nonce,
+                               model=model, cli_version=cli_version, ts_start=ts_start,
+                               exit_status=res.returncode,
+                               retries=retries + fidelity_retries,
+                               detail=f"timed out after {RUN_TIMEOUT_S}s")
+            rec.update(api_error=False, timed_out=True)
+            return rec
         # failure: decide transient vs permanent (review L9: transient signatures
         # are trusted from stderr / a parsed error field only, never from stdout).
         last_detail = ((res.stderr or "") + " " + (res.stdout or "")[:200]).strip()
@@ -1783,6 +1796,12 @@ def cmd_grade(args) -> int:
         if rec.get("api_error"):
             tax["api_error"] += 1
             continue  # nothing to grade; excluded from quality per 04 Section 5.1
+        if rec.get("timed_out"):
+            graded_out.append({**rec, "pass": False, "failure_class": "timeout",
+                               "checker_detail": rec.get("error_detail", "timed out")})
+            tax["timeout"] += 1
+            n_fail += 1
+            continue
         if not rec.get("fidelity_ok"):
             # requested != effective, or effective unverified: invalid for its cell
             # (04 Section 4.6) — excluded from quality just like api_error.

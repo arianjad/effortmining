@@ -116,10 +116,11 @@ class BuildClaudeCmdTest(unittest.TestCase):
             cmd,
             ["claude", "-p", "--effort", "xhigh", "--model", "m",
              "--output-format", "json", "--setting-sources", "", "--strict-mcp-config",
-             "--settings", "cap.json", "--append-system-prompt-file", "ctx.md"])
-        # The empty setting-sources value must be its own argv element.
-        i = cmd.index("--setting-sources")
-        self.assertEqual(cmd[i + 1], "")
+             "--tools", "", "--settings", "cap.json",
+             "--append-system-prompt-file", "ctx.md"])
+        # The empty values must be their own argv elements.
+        for flag in ("--setting-sources", "--tools"):
+            self.assertEqual(cmd[cmd.index(flag) + 1], "")
 
     def test_invoke_claude_passes_mode_to_subprocess(self):
         seen = []
@@ -185,6 +186,51 @@ class StrippedAutoMemoryTest(unittest.TestCase):
 
     def test_default_mode_leaves_env_alone(self):
         self.assertEqual(self._env_seen(False), {"PATH": "p"})
+
+
+class TimeoutIsAGradedFailureTest(unittest.TestCase):
+    """A run that cannot finish in RUN_TIMEOUT_S fails its tier: not retried, not
+    dropped as an api_error (dropping it made slow tiers look better, map 2026-09-26)."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="effort-timeout-")
+        self.paths = e.Paths(self.tmp, TASKS_DIR)
+        self.paths.ensure()
+        self.calls = 0
+        self._orig = e.invoke_claude
+
+        def fake_invoke(*a, **kw):
+            self.calls += 1
+            return e._SandboxResult(-1, "", "", True)
+
+        e.invoke_claude = fake_invoke
+
+    def tearDown(self):
+        e.invoke_claude = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _run(self):
+        task = [t for t in e.load_tasks(TASKS_DIR) if t["checker"]["type"] != "blind-grader"][0]
+        return e.execute_cell({"task": task, "tier": "xhigh", "rep": 1}, mock=False,
+                              scale="pilot", seed=1, model="m", cli_version="x",
+                              env={}, paths=self.paths, settings_path="s.json",
+                              sidecar=os.path.join(self.tmp, "side.jsonl"))
+
+    def test_timeout_is_not_retried_and_counts(self):
+        rec = self._run()
+        self.assertEqual(self.calls, 1)
+        self.assertTrue(rec["timed_out"])
+        self.assertFalse(rec["api_error"])
+        self.assertTrue(e.record_valid(rec))
+
+    def test_timeout_grades_as_fail(self):
+        e.append_jsonl(self.paths.results, self._run())
+        ns = _ns(self.tmp, mock=False)
+        self.assertEqual(e.cmd_grade(ns), 0)
+        graded, _ = e.read_jsonl(self.paths.graded)
+        self.assertEqual(len(graded), 1)
+        self.assertIs(graded[0]["pass"], False)
+        self.assertEqual(graded[0]["failure_class"], "timeout")
 
 
 class ChildEnvEffortTest(unittest.TestCase):
