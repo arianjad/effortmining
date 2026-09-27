@@ -103,6 +103,7 @@ SCALES = {
     "pilot4":   {"reps": 3, "classes": None, "tiers": ["low", "medium", "high", "xhigh"]},
     "probe-low": {"reps": 1, "classes": None, "tiers": ["low"]},  # difficulty pilot
     "map4":     {"reps": 1, "classes": None, "tiers": ["low", "medium", "high", "xhigh"]},
+    "low-xhigh": {"reps": 1, "classes": None, "tiers": ["low", "xhigh"]},  # targeted retest
     "fallback": {"reps": 2, "classes": None},
     "reduced":  {"reps": 3, "classes": {"T1-mechanical", "T2-simple-transform"}},
     "extended": {"reps": 5, "classes": None},

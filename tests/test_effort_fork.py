@@ -61,6 +61,12 @@ class TierScopedPipelineTest(unittest.TestCase):
         self.assertEqual({c["tier"] for c in cells}, FOUR_TIERS)
         self.assertEqual(len(cells), len(tasks) * 4)
 
+    def test_build_cells_low_xhigh_pair(self):
+        tasks = e.load_tasks(TASKS_DIR)
+        cells = e.build_cells(tasks, "low-xhigh")
+        self.assertEqual({c["tier"] for c in cells}, {"low", "xhigh"})
+        self.assertEqual(len(cells), len(tasks) * 2)
+
     def test_mock_pipeline_on_four_tier_scale(self):
         ns = _ns(self.tmp, scale="pilot4")
         self.assertEqual(e.cmd_validate(ns), 0)
