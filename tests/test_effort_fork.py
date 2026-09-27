@@ -239,6 +239,30 @@ class TimeoutIsAGradedFailureTest(unittest.TestCase):
         self.assertEqual(graded[0]["failure_class"], "timeout")
 
 
+class FableReviewFixesTest(unittest.TestCase):
+    """FABLE-REVIEW 2026-09-26: 300 s capped xhigh (passes at 279-281 s); num_turns and
+    permission_denials were dropped from records; composites had no low arm."""
+
+    def test_run_timeout_leaves_xhigh_headroom(self):
+        self.assertGreaterEqual(e.RUN_TIMEOUT_S, 900)
+
+    def test_record_keeps_turns_and_denials(self):
+        task = e.load_tasks(TASKS_DIR)[0]
+        env = {"usage": {}, "session_id": "s", "num_turns": 3,
+               "permission_denials": [{"tool_name": "Bash"}, {"tool_name": "Write"}]}
+        rec = e.envelope_to_record(env, task, "low", 1, scale="pilot", seed=1, nonce="n",
+                                   model="m", cli_version="v", ts_start="t", exit_status=0,
+                                   retries=0, raw_answer_path="p", effort_effective="low",
+                                   effort_effective_source="hook")
+        self.assertEqual(rec["num_turns"], 3)
+        self.assertEqual(rec["permission_denials"], ["Bash", "Write"])
+
+    def test_uniform_low_arm_is_opt_in(self):
+        self.assertEqual(e.parse_arms("uniform_low,uniform_high"), ["uniform_low", "uniform_high"])
+        self.assertEqual(e.resolve_arm_tier("uniform_low", "research-lite", {}), "low")
+        self.assertNotIn("uniform_low", e.parse_arms(None))  # defaults unchanged
+
+
 class ChildEnvEffortTest(unittest.TestCase):
     def test_session_effort_readout_is_not_inherited(self):
         # CLAUDE_EFFORT is the parent session's effort as Claude Code exports it; a child

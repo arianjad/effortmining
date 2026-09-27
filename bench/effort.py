@@ -79,7 +79,7 @@ DELTA = 0.10                    # per-class non-inferiority margin (10 pp)
 DELTA_AGG = 0.05               # policy-aggregate non-inferiority margin (5 pp)
 DELTA_EQUIV = 0.10             # TOST equivalence margin for easy classes (10 pp)
 EASY_CLASSES = {"T1-mechanical", "T2-simple-transform"}  # H1: equivalence-tested
-RUN_TIMEOUT_S = 300            # per-run hard subprocess timeout
+RUN_TIMEOUT_S = 900            # per-run hard subprocess timeout; 300 s capped xhigh (T3 d10 passes at 279-281 s)
 BOOTSTRAP_B = 10_000          # bootstrap resamples
 MIN_N_REFIT = 9               # min graded outcomes per class-cell to move a tier
 MODULATION_RATIO = 2.0        # Phase 0.3: median(max out) >= 2x median(low out)
@@ -119,7 +119,8 @@ SCALES = {
 SUITES = ("v1", "v2")
 COMPOSITE_CLASS = "X-composite"
 COMPOSITE_ARMS = ("calibrated", "inherit_xhigh", "uniform_high")
-ARM_FIXED_TIER = {"inherit_xhigh": "xhigh", "uniform_high": "high"}
+ARM_FIXED_TIER = {"inherit_xhigh": "xhigh", "uniform_high": "high",
+                  "uniform_low": "low"}  # uniform_low: opt-in via --arms, not a default arm
 COMPOSITE_FALLBACK_TIER = "high"     # calibrated arm: class not yet in table -> high
 GRADER_MODEL = MODEL                 # blind grader runs on the same model...
 GRADER_EFFORT = "medium"             # ...pinned one tier below the miner workers
@@ -1249,6 +1250,10 @@ def envelope_to_record(env: dict, task: dict, tier: str, rep: int, *, scale: str
         "model_usage": env.get("modelUsage", {}) if isinstance(env, dict) else {},
         "raw_answer_path": raw_answer_path,
         "exit_status": exit_status, "api_error": False, "retries": retries,
+        # >1 turn = the model tried tools; denials name the tools it was refused.
+        "num_turns": int(env.get("num_turns", 0) or 0),
+        "permission_denials": [d.get("tool_name") for d in env.get("permission_denials") or []
+                               if isinstance(d, dict)],
     }
     # v2 only: prepended-document token count. Absent for v1 so records stay
     # byte-for-byte identical when no documents are present.
@@ -1517,7 +1522,7 @@ def parse_arms(arg) -> list:
         return list(COMPOSITE_ARMS)
     arms = [a.strip() for a in str(arg).split(",") if a.strip()]
     for a in arms:
-        if a not in COMPOSITE_ARMS:
+        if a not in COMPOSITE_ARMS and a not in ARM_FIXED_TIER:
             raise SystemExit(f"unknown arm {a!r}; choose from {list(COMPOSITE_ARMS)}")
     return arms
 
